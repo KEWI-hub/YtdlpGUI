@@ -19,6 +19,7 @@ if /i "%~1"=="force" set "FORCE=1"
 set "URL_YTDLP=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 set "URL_FFMPEG=https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 set "URL_DENO=https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+set "URL_APP=https://github.com/KEWI-hub/YtdlpGUI/releases/latest/download/YtdlpGUI.exe"
 set "URL_ARIA2=https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
 
 echo ============================================
@@ -129,6 +130,14 @@ if exist "%~dp0YtdlpGUI.exe" (
     exit /b 0
 )
 echo [ยังไม่มี / missing] YtdlpGUI.exe
+echo [โหลด / download] YtdlpGUI.exe จาก GitHub Releases / from GitHub Releases ...
+curl -L --fail --retry 3 --progress-bar -o "%~dp0YtdlpGUI.exe" "%URL_APP%"
+if not errorlevel 1 (
+    echo [เสร็จ / done] YtdlpGUI.exe
+    exit /b 0
+)
+del "%~dp0YtdlpGUI.exe" 2>nul
+echo   โหลดจาก Releases ไม่ได้ repo อาจเป็น private / cannot download, the repo may be private
 set "NOAPP=1"
 where py >nul 2>&1
 if errorlevel 1 (

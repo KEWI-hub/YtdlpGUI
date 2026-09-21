@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import urllib.parse
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -18,6 +19,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_NAME = "YtdlpGUI"
+APP_VERSION = "1.1.0"  # ต้องตรงกับ tag บน GitHub (v1.1.0) ตอนออก Release
+GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 BIN_DIR = os.path.join(APP_DIR, "bin")
 TMP_DIR = os.path.join(APP_DIR, "_tmp")
@@ -678,6 +681,68 @@ def fail_reason(out):
     return ""
 
 
+def parse_version(v):
+    """'v1.2.3' -> (1, 2, 3) ไว้เทียบว่าใหม่กว่าไหม"""
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) or (0,)
+
+
+def github_token():
+    """ยืม token ที่ git จำไว้ (Git Credential Manager) ใช้เฉพาะตอน repo เป็น private ไม่เด้งหน้าต่างถามรหัส"""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    # ลองระบุชื่อเจ้าของ repo ก่อน (เครื่องที่จำไว้หลายบัญชีจะถามว่าใช้บัญชีไหน ถ้าไม่ระบุ)
+    for user in (GITHUB_REPO.split("/")[0], ""):
+        q = "protocol=https\nhost=github.com\n" + (f"username={user}\n" if user else "") + "\n"
+        try:
+            r = subprocess.run(["git", "credential", "fill"], input=q, capture_output=True, text=True,
+                               env=env, creationflags=NO_WINDOW, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        m = re.search(r"^password=(.+)$", r.stdout, re.M)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def github_get(url, token="", accept="application/vnd.github+json", timeout=30):
+    headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": accept}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
+        return r.read()
+
+
+def latest_release():
+    """คืน (tag, ลิงก์ asset YtdlpGUI.exe, token ที่ต้องใช้) หรือ None ถ้าเช็คไม่ได้"""
+    api = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    token = ""
+    try:
+        data = json.loads(github_get(api))
+    except urllib.error.HTTPError as e:
+        if e.code not in (401, 403, 404):  # 404 = repo เป็น private ต้องใช้ token
+            return None
+        token = github_token()
+        if not token:
+            return None
+        try:
+            data = json.loads(github_get(api, token))
+        except Exception:
+            return None
+    except Exception:
+        return None
+    asset = next((a for a in data.get("assets", []) if a.get("name", "").lower() == "ytdlpgui.exe"), None)
+    if not asset:
+        return None
+    return data.get("tag_name", ""), asset["url"], token
+
+
+def download_update(asset_url, token, dest):
+    blob = github_get(asset_url, token, accept="application/octet-stream", timeout=300)
+    if len(blob) < 1_000_000 or blob[:2] != b"MZ":  # ต้องเป็นไฟล์ exe จริง
+        raise ValueError("ไฟล์ที่โหลดมาไม่ใช่ exe")
+    with open(dest, "wb") as f:
+        f.write(blob)
+
+
 def to_int(var, default, lo, hi):
     try:
         return max(lo, min(hi, int(var.get())))
@@ -688,7 +753,8 @@ def to_int(var, default, lo, hi):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(APP_NAME)
+        self.title(f"{APP_NAME} v{APP_VERSION}")
+        self.pending_update = ""  # path ของ exe ใหม่ที่โหลดมาแล้ว รอติดตั้งตอนคิวว่าง
         self.geometry("1000x680")
         self.minsize(820, 540)
 
@@ -743,6 +809,7 @@ class App(tk.Tk):
             messagebox.showerror(APP_NAME, f"ไม่เจอ yt-dlp.exe ที่\n{YTDLP}")
         elif self.var_update.get():
             self.run_update()
+            self.check_app_update()
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -1310,6 +1377,60 @@ class App(tk.Tk):
                 title = page_title(fetch_page(url, notify=lambda m: self.events.put(("notice", m))))
             self.events.put(("title", item_id, title))
 
+    def check_app_update(self):
+        """เช็คเวอร์ชันแอปกับ GitHub Releases ถ้ามีใหม่กว่า โหลดมาเตรียมไว้แล้วติดตั้งให้เอง"""
+        if not getattr(sys, "frozen", False):
+            return  # รันจาก source (.py) ให้ git pull เอง
+
+        def work():
+            rel = latest_release()
+            if not rel:
+                self.events.put(("log", "เช็คเวอร์ชันแอปกับ GitHub ไม่ได้ (ข้าม)"))
+                return
+            tag, asset_url, token = rel
+            if parse_version(tag) <= parse_version(APP_VERSION):
+                self.events.put(("log", f"แอปเป็นเวอร์ชันล่าสุดแล้ว (v{APP_VERSION})"))
+                return
+            self.events.put(("notice", f"มีแอปเวอร์ชันใหม่ {tag} กำลังโหลด ..."))
+            dest = os.path.join(APP_DIR, "YtdlpGUI.new.exe")
+            try:
+                download_update(asset_url, token, dest)
+            except Exception as e:
+                self.events.put(("log", f"โหลดแอปเวอร์ชันใหม่ไม่ได้: {e}"))
+                return
+            self.events.put(("app_update", tag, dest))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_app_update(self):
+        """ปิดแอป แล้วให้สคริปต์รอจนแอปปิดสนิท สลับไฟล์ exe แล้วเปิดแอปใหม่"""
+        new = self.pending_update
+        exe = sys.executable
+        script = os.path.join(APP_DIR, "_update.cmd")
+        # newline="" กัน \r\n กลายเป็น \r\r\n / ใช้ ping แทน timeout เพราะ timeout ใช้ไม่ได้ตอนไม่มีหน้าต่าง
+        with open(script, "w", encoding="utf-8", newline="") as f:
+            # ใช้ path เต็มของ find/tasklist ของ Windows กันไปเจอ find ของโปรแกรมอื่นใน PATH
+            # และวนย้ายไฟล์ซ้ำจนสำเร็จ (ไฟล์ exe ยังถูกล็อกอยู่ครู่หนึ่งหลังแอปปิด)
+            name = os.path.basename(exe)
+            f.write("@echo off\r\n"
+                    'set "SYS=%SystemRoot%\\System32"\r\n'
+                    "set n=0\r\n"
+                    ":wait\r\n"
+                    f'"%SYS%\\tasklist.exe" /FI "IMAGENAME eq {name}" | "%SYS%\\find.exe" /I "{name}" >nul'
+                    ' && ("%SYS%\\PING.EXE" -n 2 127.0.0.1 >nul & goto wait)\r\n'
+                    ":move\r\n"
+                    f'move /y "{new}" "{exe}" >nul 2>&1\r\n'
+                    "if errorlevel 1 (\r\n"
+                    "  set /a n+=1\r\n"
+                    '  if %n% lss 30 ("%SYS%\\PING.EXE" -n 2 127.0.0.1 >nul & goto move)\r\n'
+                    ")\r\n"
+                    f'start "" "{exe}"\r\n'
+                    'del "%~f0"\r\n')
+        self.save_settings()
+        self.save_queue()
+        subprocess.Popen(["cmd", "/c", script], creationflags=NO_WINDOW, cwd=APP_DIR)
+        self.destroy()
+
     def run_update(self):
         if self.running or self.busy_updating:
             return
@@ -1437,6 +1558,9 @@ class App(tk.Tk):
         self.var_status.set("หยุดแล้ว" if self.stopping else
                             f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}")
         self.save_queue()
+        if self.pending_update and not self.stopping:
+            self.var_status.set("คิวเสร็จแล้ว กำลังอัปเดตแอป ...")
+            self.after(1500, self._apply_app_update)
 
     def _update_summary(self):
         if not self.running:
@@ -1788,6 +1912,15 @@ class App(tk.Tk):
                     self.bench_ready = True
                     self._schedule()
                     self.write_log("ทดสอบตัวแปลง (1080p): " + " | ".join(labels) + f"  => เลือก {best}")
+                elif kind == "app_update":
+                    _, tag, path = ev
+                    self.pending_update = path
+                    if self.running:
+                        self.write_log(f"โหลดแอป {tag} มาแล้ว จะติดตั้งให้ตอนคิวเสร็จ")
+                    else:
+                        self.write_log(f"ติดตั้งแอป {tag} แล้วเปิดใหม่ ...")
+                        self.var_status.set(f"กำลังอัปเดตแอปเป็น {tag} ...")
+                        self.after(1500, self._apply_app_update)
                 elif kind == "update_done":
                     self.busy_updating = False
                     self.btn_start.configure(state="normal")
@@ -1827,6 +1960,9 @@ class App(tk.Tk):
         if self.running and not messagebox.askyesno(APP_NAME, "กำลังโหลด/แปลงอยู่ จะปิดและหยุดเลยไหม?"):
             return
         self.stop()
+        if self.pending_update:
+            self._apply_app_update()
+            return
         self.save_settings()
         self.save_queue()
         self.destroy()

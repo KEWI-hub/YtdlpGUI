@@ -16,7 +16,7 @@ This app, its `setup.bat` and this README were written with **Claude** (Anthropi
 
 1. Download or clone this repo.
 2. Double-click **`setup.bat`**. It downloads the required tools into `bin\` (about 250 MB) and takes around 15–60 seconds.
-3. Get **`YtdlpGUI.exe`**: download it from this repo's **Releases** page and put it next to `setup.bat`, **or** let `setup.bat` build it for you if Python 3.11+ is installed (answer `Y` when asked).
+3. `setup.bat` also downloads **`YtdlpGUI.exe`** from the latest **Release**. If that is not possible (e.g. the repo is private), it offers to build it with Python 3.11+ (answer `Y`).
 4. Open `YtdlpGUI.exe`, paste a link with **Ctrl+V**, pick the download folder and press **▶ เริ่มโหลด** (Start).
 
 Run `setup.bat force` later to update every tool to the newest version.
@@ -35,6 +35,26 @@ Run `setup.bat force` later to update every tool to the newest version.
 | `_tmp\`, `build\`, downloaded videos | Temporary / personal files | — |
 
 All of these are listed in `.gitignore`, so they are never committed by accident.
+
+### Automatic app updates
+
+Every time the app starts (when "เช็คอัปเดตตอนเปิด" / check for updates on start is ticked) it compares its own version (shown in the window title, e.g. `YtdlpGUI v1.1.0`) with the latest GitHub Release:
+
+1. If GitHub has a newer version, it downloads the new `YtdlpGUI.exe` in the background.
+2. If nothing is downloading, it closes, swaps the exe and reopens by itself (queue and settings are kept). If the queue is running, it waits until the queue finishes, or installs when you close the app.
+3. If GitHub cannot be reached, it just skips the check.
+
+### Contributing (fork + pull request)
+
+- Only the owner (**KEWI-hub**) pushes to this repo. Please do **not** ask for collaborator access.
+- To change something: **Fork** → edit in your fork → open a **Pull Request** back to `main`. The owner reviews and merges.
+- Keep the README (English + Thai) updated in the same PR, and never commit `bin\`, `*.exe`, `_browser\`, `settings.json` or `queue.json`.
+
+### Releasing a new version (owner)
+
+1. Change `APP_VERSION` at the top of `ytdlp_gui.py` (e.g. `1.2.0`) and add a changelog entry to the README.
+2. Commit and push, then push a tag with the same number: `git tag v1.2.0` and `git push origin v1.2.0`.
+3. GitHub Actions (`.github/workflows/release.yml`) builds `YtdlpGUI.exe` and publishes the Release. Every installed app updates itself on its next start.
 
 ### Requirements
 
@@ -123,9 +143,7 @@ The full guide below is in Thai, including every setting, how each feature works
 
 1. โหลดหรือ clone repo นี้ลงเครื่อง
 2. ดับเบิลคลิก **`setup.bat`** จะโหลดเครื่องมือที่จำเป็นมาไว้ใน `bin\` ให้เอง (ประมาณ 250MB ใช้เวลา 15–60 วินาที)
-3. เอา **`YtdlpGUI.exe`** มาไว้ข้าง `setup.bat` ได้ 2 ทาง
-   - โหลดจากหน้า **Releases** ของ repo นี้
-   - ถ้าเครื่องมี Python 3.11 ขึ้นไป `setup.bat` จะถามว่าจะ build เองไหม ตอบ `Y` แล้วรอประมาณ 1 นาที
+3. `setup.bat` จะโหลด **`YtdlpGUI.exe`** จาก **Release ล่าสุด** ให้ด้วย ถ้าโหลดไม่ได้ (เช่น repo เป็น private) และเครื่องมี Python 3.11 ขึ้นไป จะถามว่าจะ build เองไหม ตอบ `Y` แล้วรอประมาณ 1 นาที
 4. เปิด `YtdlpGUI.exe` ได้เลย
 
 - ถ้าไฟล์ไหนมีอยู่แล้ว `setup.bat` จะข้ามไป ไม่โหลดซ้ำ
@@ -146,6 +164,31 @@ The full guide below is in Thai, including every setting, how each feature works
 | `_tmp\`, `build\`, คลิปที่โหลดมา | ไฟล์ชั่วคราว / ไฟล์ส่วนตัว | - |
 
 ทั้งหมดนี้อยู่ใน `.gitignore` แล้ว เลยไม่เผลอ commit ขึ้นไป
+
+## อัปเดตแอปอัตโนมัติ
+
+ทุกครั้งที่เปิดแอป (ถ้าติ๊ก "เช็คอัปเดตตอนเปิด" ไว้) แอปจะเทียบเวอร์ชันของตัวเอง (ดูได้ที่ชื่อหน้าต่าง เช่น `YtdlpGUI v1.1.0`) กับ Release ล่าสุดบน GitHub
+
+1. ถ้าบน GitHub ใหม่กว่า จะโหลด `YtdlpGUI.exe` ตัวใหม่มาเก็บไว้ก่อน (โหลดเบื้องหลัง)
+2. ถ้าไม่มีอะไรโหลดอยู่ แอปจะปิดตัว สลับไฟล์ exe แล้วเปิดใหม่ให้เอง คิวและค่าที่ตั้งไว้ยังอยู่ครบ
+3. ถ้าคิวกำลังทำงาน จะรอจนคิวเสร็จ หรือติดตั้งตอนคุณกดปิดแอป
+4. ถ้าต่อ GitHub ไม่ได้ ก็ข้ามไป ใช้งานต่อได้ตามปกติ
+
+- ถ้า repo เป็น private แอปจะยืมสิทธิ์ที่ git จำไว้ในเครื่อง (Git Credential Manager) มาเช็ค ถ้าเครื่องนั้นไม่เคยล็อกอิน GitHub จะเช็คไม่ได้
+- รันจาก source (`py ytdlp_gui.py`) จะไม่อัปเดตตัวเอง ให้ใช้ `git pull` แทน
+
+## การมีส่วนร่วม (Fork + Pull Request)
+
+- **คนที่แก้ repo นี้ได้โดยตรงมีคนเดียวคือเจ้าของ (KEWI-hub)** ไม่ต้องขอสิทธิ์ collaborator
+- ถ้าจะแก้อะไร ให้ **Fork** ไปที่บัญชีตัวเอง แก้ใน fork แล้วเปิด **Pull Request** กลับมาที่ `main` เจ้าของจะรีวิวแล้วค่อยรวม
+- แก้ README (ทั้งอังกฤษและไทย) ใน PR เดียวกันด้วย และห้าม commit `bin\`, `*.exe`, `_browser\`, `settings.json`, `queue.json`
+
+## ออกเวอร์ชันใหม่ (สำหรับเจ้าของ)
+
+1. แก้ `APP_VERSION` บรรทัดบนๆ ของ `ytdlp_gui.py` (เช่น `1.2.0`) และเขียนประวัติการเปลี่ยนแปลงใน README
+2. commit แล้ว push จากนั้นสร้าง tag เลขเดียวกันแล้ว push: `git tag v1.2.0` และ `git push origin v1.2.0`
+3. GitHub Actions (`.github/workflows/release.yml`) จะ build `YtdlpGUI.exe` แล้วออก Release ให้เอง ถ้าเลขใน `APP_VERSION` ไม่ตรงกับ tag จะไม่ยอม build
+4. แอปที่ติดตั้งอยู่ทุกเครื่องจะอัปเดตตัวเองตอนเปิดครั้งถัดไป
 
 ## วิธีใช้
 
@@ -199,7 +242,7 @@ The full guide below is in Thai, including every setting, how each feature works
 
 ## แกะลิงก์จากหน้ารวม
 
-วางลิงก์หน้าที่มีหลายคลิป เช่น `https://pornavhd.com/?s=ririsu+amano` แอปจะดึงลิงก์คลิปทุกอันในหน้านั้นมาใส่คิวให้ (ตัวอย่างนี้ได้ 12 ลิงก์)
+วางลิงก์หน้าที่มีหลายคลิป เช่น `https://example-site.com/?s=some+name` แอปจะดึงลิงก์คลิปทุกอันในหน้านั้นมาใส่คิวให้ (ตัวอย่างนี้ได้ 12 ลิงก์)
 
 **แอปรู้ได้ยังไงว่าเป็นหน้ารวม** ลิงก์มีคำค้น (`?s=`, `?q=`, `?search=`, `?k=` ฯลฯ) หรือ path มีคำว่า `search`, `tag`, `category`, `genre`, `actress`, `actor`, `performer`, `idol`, `cast`, `star`, `model`, `pornstar`, `channel`, `studio`, `maker`, `series`, `playlist`, `user`, `videos`, `page` หรือเป็นช่อง/playlist ของ YouTube
 ถ้าแอปไม่รู้ว่าเป็นหน้ารวม ให้คลิกขวาที่แถวนั้น → **แกะลิงก์คลิปจากหน้านี้**
@@ -207,7 +250,7 @@ The full guide below is in Thai, including every setting, how each feature works
 **วิธีแกะ**
 
 1. ถาม yt-dlp ก่อน (`--flat-playlist`) ใช้กับเว็บที่ yt-dlp รู้จัก เช่น ช่อง/playlist YouTube, หน้า model ของ pornhub
-2. ถ้า yt-dlp แกะไม่ได้ แอปอ่านหน้าเว็บเอง เก็บลิงก์ในเว็บเดียวกัน ตัดลิงก์เมนูทิ้ง (หมวด, tag, หน้า, dmca ฯลฯ) แล้วเลือกกลุ่มลิงก์ที่ **รูปแบบเหมือนกันและมีมากที่สุด** เช่น `/2025/09/07/ririsuamano_12/` กับอีก 11 อันเป็นรูปแบบ `/ปี/เดือน/วัน/ชื่อ/` เหมือนกัน
+2. ถ้า yt-dlp แกะไม่ได้ แอปอ่านหน้าเว็บเอง เก็บลิงก์ในเว็บเดียวกัน ตัดลิงก์เมนูทิ้ง (หมวด, tag, หน้า, dmca ฯลฯ) แล้วเลือกกลุ่มลิงก์ที่ **รูปแบบเหมือนกันและมีมากที่สุด** เช่น `/2025/09/07/somename_12/` กับอีก 11 อันเป็นรูปแบบ `/ปี/เดือน/วัน/ชื่อ/` เหมือนกัน
 3. ตามไปหน้าถัดไปจนครบจำนวน **"หน้ารวมสูงสุด"** (ค่าเริ่มต้น 5 หน้า ตั้งได้ 1–50) ได้ลิงก์ไม่เกิน 1000 ลิงก์ต่อครั้ง
    - หาหน้าถัดไปจากลิงก์ "next" ของเว็บ ถ้าไม่มีจะหาลิงก์เลขหน้าแทน (`/page/2/`, `?page=2`, `?paged=2`)
    - ถ้าหน้าไหนไม่มีลิงก์ใหม่เลย (หน้าสุดท้าย) จะหยุดเอง
@@ -219,9 +262,9 @@ The full guide below is in Thai, including every setting, how each feature works
 
 | ลิงก์ที่วาง | โฟลเดอร์ย่อย |
 |---|---|
-| `pornavhd.com/?s=ririsu+amano` | `ririsu amano` (ใช้คำค้น) |
-| `missav.ws/en/actresses/Ririsu%20Amano` | `Ririsu Amano` (ท้าย path) |
-| `pornavhd.com/actor/retsu_dao/` | `retsu dao` |
+| `example-site.com/?s=some+name` | `some name` (ใช้คำค้น) |
+| `example-site.com/en/actresses/Some%20Name` | `Some Name` (ท้าย path) |
+| `example-site.com/actor/some_actor/` | `some actor` |
 | `example.com/tag/big-name/page/2/` | `big name` |
 | `youtube.com/@RickAstleyYT/videos` | `@RickAstleyYT` |
 
@@ -362,6 +405,7 @@ YtdlpGUI\
 ├── setup.bat         โหลดเครื่องมือใน bin\ ให้ (และ build YtdlpGUI.exe ถ้ามี Python)
 ├── requirements.txt  library ที่ต้องใช้ตอน build
 ├── .gitignore        ไฟล์ที่ไม่อัปขึ้น GitHub
+├── .github\workflows\release.yml  build exe และออก Release ให้อัตโนมัติเมื่อ push tag
 ├── settings.json     ค่าที่ตั้งไว้ (สร้างเองอัตโนมัติ)
 ├── queue.json        คิวที่ค้างอยู่ (สร้างเองอัตโนมัติ)
 ├── _tmp\             ไฟล์ชั่วคราวระหว่างโหลด
@@ -504,6 +548,15 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 
 เรียงจากใหม่ไปเก่า
 
+### v1.1.0 (2026-09-21) — อัปเดตตัวเองจาก GitHub
+
+- เพิ่มเลขเวอร์ชันแอป (`APP_VERSION`) โชว์ที่ชื่อหน้าต่าง
+- ตอนเปิดแอป เช็ค Release ล่าสุดบน GitHub ถ้าใหม่กว่า โหลดมาแล้วสลับ exe และเปิดใหม่ให้เอง (รอคิวเสร็จก่อนถ้ากำลังโหลดอยู่)
+- ถ้า repo เป็น private ใช้สิทธิ์ที่ git จำไว้ในเครื่องมาเช็คแทน
+- GitHub Actions: push tag `vX.Y.Z` แล้ว build `YtdlpGUI.exe` และออก Release ให้อัตโนมัติ
+- `setup.bat` โหลด `YtdlpGUI.exe` จาก Release ล่าสุดให้ด้วย
+- README: เพิ่มหัวข้ออัปเดตอัตโนมัติ, Fork + Pull Request, วิธีออกเวอร์ชันใหม่ และเปลี่ยนตัวอย่างที่เป็นชื่อคนจริงเป็นตัวอย่างทั่วไป
+
 ### 2026-09-21 — แก้ค้างที่ 99.x%
 
 - ใส่ `--socket-timeout 20` ให้ yt-dlp: connection ที่เงียบไปจะถูกตัดแล้วลองชิ้นนั้นใหม่ (เดิมรอตลอดไป ทำให้ค้างที่ 99.x%)
@@ -518,20 +571,20 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 
 ### 2026-09-21 — หน้ารวมหลายหน้า และโฟลเดอร์ย่อย
 
-- คลิปที่แกะจากหน้ารวมโหลดลงโฟลเดอร์ย่อยตามคำค้น/ชื่อหน้า (เช่น `ririsu amano`) เพิ่มคอลัมน์ "โฟลเดอร์ย่อย" ในคิว
+- คลิปที่แกะจากหน้ารวมโหลดลงโฟลเดอร์ย่อยตามคำค้น/ชื่อหน้า (เช่น `some name`) เพิ่มคอลัมน์ "โฟลเดอร์ย่อย" ในคิว
 - เช็คไฟล์ซ้ำในโฟลเดอร์ย่อยด้วย และจำโฟลเดอร์ย่อยไว้ใน queue.json
 - หาหน้าถัดไปจากลิงก์เลขหน้า (`/page/N/`, `?page=N`) ได้แล้ว เว็บที่ไม่มีปุ่ม "next" ก็ตามไปหลายหน้าได้
 - เพิ่มตัวเลือก "หน้ารวมสูงสุด" (1–50 หน้า ค่าเริ่มต้น 5) และเพิ่มเพดานเป็น 1000 ลิงก์
-- ทดสอบ `pornavhd.com/category/fc2/` 3 หน้า ได้ 106 ลิงก์ไม่ซ้ำ
+- ทดสอบ `example-site.com/category/xyz/` 3 หน้า ได้ 106 ลิงก์ไม่ซ้ำ
 - รู้จักหน้า `/actor/`, `/performer/`, `/idol/`, `/cast/` เป็นหน้ารวมด้วย
-- ทดสอบ `pornavhd.com/actor/retsu_dao/` ได้ครบ 78 ลิงก์ (2 หน้า ไม่ขาด ไม่มีคลิปอื่นปน) และ `?s=deerlong` ได้ 84 ลิงก์ (3 หน้า)
+- ทดสอบ `example-site.com/actor/some_actor/` ได้ครบ 78 ลิงก์ (2 หน้า ไม่ขาด ไม่มีคลิปอื่นปน) และ `?s=another+name` ได้ 84 ลิงก์ (3 หน้า)
 
 ### 2026-09-21 — แกะลิงก์จากหน้ารวม
 
-- วางลิงก์หน้าค้นหา/หมวด/tag/นักแสดง/ช่อง แล้วแอปดึงลิงก์คลิปทั้งหมดเข้าคิวให้ (ทดสอบ `pornavhd.com/?s=ririsu+amano` ได้ครบ 12 ลิงก์)
+- วางลิงก์หน้าค้นหา/หมวด/tag/นักแสดง/ช่อง แล้วแอปดึงลิงก์คลิปทั้งหมดเข้าคิวให้ (ทดสอบ `example-site.com/?s=some+name` ได้ครบ 12 ลิงก์)
 - ใช้ yt-dlp แกะก่อน ถ้าไม่ได้ค่อยอ่านหน้าเว็บเองแล้วเลือกกลุ่มลิงก์ที่รูปแบบเหมือนกันมากที่สุด ตามหน้าถัดไปได้ 5 หน้า
 - เพิ่มเมนูคลิกขวา "แกะลิงก์คลิปจากหน้านี้"
-- เว็บที่ yt-dlp อ่านไม่ได้แม้ปลอมตัวเป็น Chrome แล้ว จะลองอ่านหน้าเว็บเองต่อ (เช่น pornavhd ที่ใช้ player ของ recordplay)
+- เว็บที่ yt-dlp อ่านไม่ได้แม้ปลอมตัวเป็น Chrome แล้ว จะลองอ่านหน้าเว็บเองต่อ (เช่น เว็บที่ใช้ player ภายนอกใน iframe)
 - ข้าม iframe โฆษณาของ nettrck
 
 ### 2026-09-21 — ล้างคิวที่เสร็จแล้วอัตโนมัติ
