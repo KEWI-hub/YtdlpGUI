@@ -30,3 +30,6 @@ _update.cmd
 
 # error log ในเครื่อง (ส่งขึ้น repo private YtdlpGUI-logs แทน)
 logs/
+
+# รายการคลิปที่เคยโหลด (ของแต่ละเครื่อง)
+downloaded.txt

@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -546,7 +546,8 @@ def find_media(page):
     return ""
 
 
-ID_ROOM = 16    # เผื่อที่ให้ " [รหัสคลิป]" ท้ายชื่อ (รหัสส่วนใหญ่ยาว 11–15 ตัว)
+ARCHIVE_FILE = os.path.join(APP_DIR, "downloaded.txt")  # yt-dlp จดรหัสคลิปที่โหลดแล้ว (ใช้กันโหลดซ้ำ)
+ARCHIVE_MSG = "has already been recorded in the archive"
 
 
 def safe_filename(name, limit=150):
@@ -556,8 +557,8 @@ def safe_filename(name, limit=150):
 
 
 def default_outtmpl(limit):
-    """ชื่อไฟล์ = ชื่อเรื่อง (ตัดให้สั้น) + [รหัสคลิป] รวมแล้วไม่เกิน limit ตัวอักษร (ไม่นับนามสกุล)"""
-    return f"%(title).{max(10, limit - ID_ROOM)}s [%(id)s].%(ext)s"
+    """ชื่อไฟล์ = ชื่อเรื่องอย่างเดียว ไม่เกิน limit ตัวอักษร (ไม่นับนามสกุล) ไม่ใส่รหัสคลิป"""
+    return f"%(title).{max(10, limit)}s.%(ext)s"
 
 
 # คุณภาพต่อขนาดไฟล์ของแต่ละตัว (มากกว่า = ดีกว่า) ใช้ตัดสินเมื่อความเร็วผ่านเกณฑ์แล้ว
@@ -1829,6 +1830,8 @@ class App(tk.Tk):
                 "-P", opts["out"], "-o", outtmpl or default_outtmpl(opts.get("name_max", NAME_MAX)),
                 # กันเกินอีกชั้น ถ้ารหัสคลิปยาวผิดปกติ
                 "--trim-filenames", str(opts.get("name_max", NAME_MAX)),
+                # โหลดซ้ำ (force) = เขียนทับไฟล์เดิม / ปกติ = ไม่เขียนทับไฟล์ที่มีอยู่
+                "--force-overwrites" if opts.get("force") else "--no-overwrites",
                 "--progress-template",
                 "download:[P]%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
                 "|%(progress.downloaded_bytes)s",
@@ -1843,6 +1846,8 @@ class App(tk.Tk):
             fmt[i] = "/".join("+".join(p + ex if n == 0 else p for n, p in enumerate(alt.split("+")))
                               for alt in fmt[i].split("/"))
         args += fmt + opts["cookies"] + list(extra)
+        if not opts.get("force"):
+            args += ["--download-archive", ARCHIVE_FILE]
         # ห้ามข้ามชิ้นที่โหลดไม่ได้ (ไม่งั้นได้วิดีโอที่ขาดเป็นช่วงๆ) โดน 429 ให้รอนานขึ้นเรื่อยๆ แล้วลองใหม่
         args += ["--abort-on-unavailable-fragments", "--fragment-retries", "30",
                  "--retry-sleep", "fragment:exp=1:30", "--retries", "10"]
@@ -2115,6 +2120,11 @@ class App(tk.Tk):
         if isinstance(rc, str) and rc.startswith("have:"):
             self.events.put(("have", item_id, rc[5:]))
             return
+        if ARCHIVE_MSG in last["out"] and not file:
+            # เคยโหลดคลิปนี้ไปแล้ว (อยู่ใน downloaded.txt) ไม่โหลดซ้ำ
+            self.events.put(("log", f"[#{item_id}] เคยโหลดคลิปนี้แล้ว ไม่โหลดซ้ำ (คลิกขวา > โหลดซ้ำ ถ้าต้องการ)"))
+            self.events.put(("have", item_id, ""))
+            return
         reason = "หาลิงก์วิดีโอไม่เจอ" if rc == NO_MEDIA else fail_reason(last["out"])
         self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
 
@@ -2257,7 +2267,8 @@ class App(tk.Tk):
                     self.active_dl -= 1
                     it = self._find(item_id)
                     if it:
-                        it["status"], it["progress"], it["file"] = HAVE, os.path.basename(f), f
+                        it["status"], it["file"] = HAVE, f
+                        it["progress"] = os.path.basename(f) if f else "เคยโหลดแล้ว"
                         self._refresh(it)
                     changed = True
                 elif kind == "conv_done":
