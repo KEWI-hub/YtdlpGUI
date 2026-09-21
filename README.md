@@ -136,6 +136,7 @@ Every time the app starts (when "เช็คอัปเดตตอนเป�
 | ใช้ aria2c | on | Multi-connection downloader for normal sites |
 | โหลดพร้อมกัน (Parallel links) | 3 | Links downloading at the same time |
 | หน้ารวมสูงสุด (Max listing pages) | 5 | Pages to follow when extracting a listing page |
+| ชื่อไฟล์ยาวสุด (Max file name) | 70 | Max file name length in characters, extension not counted. The title is shortened first so the `[clip id]` at the end is kept |
 | ชิ้นส่วนพร้อมกัน (Parallel fragments) | 16 | m3u8 fragments per link. More is faster; lower it if you get 429 |
 | ตัวแปลง (Encoder) | auto | NVENC / AMF / QSV / CPU x265 |
 | ไฟล์ / คุณภาพ / Preset | mp4 / 24 / slow | Output container, quality (lower = sharper, bigger) and speed preset |
@@ -409,6 +410,7 @@ extension คุยกับแอปผ่าน `127.0.0.1:47777` ในเค
 | ใช้ aria2c | เปิด | โหลดแบบหลาย connection ให้เร็วขึ้น (ถ้าเว็บต้องปลอมตัวเป็น Chrome แอปจะใช้ตัวโหลดของ yt-dlp แทนให้เอง) |
 | โหลดพร้อมกัน | 3 | จำนวนลิงก์ที่โหลดพร้อมกัน (1–8) |
 | หน้ารวมสูงสุด | 5 | ตอนแกะลิงก์จากหน้ารวม จะตามไปหน้าถัดไปได้กี่หน้า (1–50) |
+| ชื่อไฟล์ยาวสุด | 70 | ความยาวชื่อไฟล์สูงสุด (ตัวอักษร ไม่นับนามสกุล) ตั้งได้ 30–150 ตัดชื่อเรื่องให้สั้นก่อน เพื่อให้ `[รหัสคลิป]` ท้ายชื่อยังอยู่ (ใช้กันโหลดซ้ำ) เช่น `Rick Astley - Never Gonna Give You Up meme template [hPr-Yc92qaY]` |
 | ชิ้นส่วนพร้อมกัน | 16 | จำนวนชิ้นของวิดีโอแบบสตรีม (m3u8) ที่โหลดพร้อมกันต่อ 1 ลิงก์ (1–32) ยิ่งเยอะยิ่งเร็ว ดูหัวข้อ "ทำไมบางเว็บโหลดช้า" |
 | **ตั้งค่าการแปลง H.265** | | กรอบด้านล่าง ใช้กับทุกคลิปที่ติ๊ก ☑ แปลง (แปลงเสร็จจะลบไฟล์ต้นฉบับ) |
 | ตัวแปลง | เลือกให้เอง | NVIDIA (NVENC) / AMD (AMF) / Intel (QSV) / CPU (x265) |
@@ -655,6 +657,12 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 ## ประวัติการเปลี่ยนแปลง
 
 เรียงจากใหม่ไปเก่า
+
+### v1.2.2 (2026-09-21) — จำกัดความยาวชื่อไฟล์
+
+- ชื่อไฟล์ยาวสุด 70 ตัวอักษร (ไม่นับนามสกุล) ตั้งได้ 30–150 ที่ "ชื่อไฟล์ยาวสุด" เดิมยาวได้ถึง 150 byte
+- ตัดชื่อเรื่องให้สั้นก่อน `[รหัสคลิป]` ท้ายชื่อเลยยังอยู่ครบ และมี `--trim-filenames` กันเกินอีกชั้น
+- ใช้กับชื่อที่ตั้งเองและชื่อจากหน้าเว็บ (missav, 7mmtv ฯลฯ) ด้วย
 
 ### v1.2.1 (2026-09-21) — แก้อัปเดตแล้วเปิดไม่ขึ้น
 

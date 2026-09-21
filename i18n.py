@@ -202,6 +202,7 @@ EN = {
     "ส่ง error log ขึ้น GitHub แล้ว": "Uploaded error logs to GitHub:",
     "รับลิงก์จาก Chrome Extension": "Received from Chrome Extension:",
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
+    "ชื่อไฟล์ยาวสุด": "Max file name",
     # --- ภาษา ---
     "ภาษา": "Language",
     "เปลี่ยนภาษาแล้ว แอปจะเปิดใหม่": "Language changed, the app will restart",

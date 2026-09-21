@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -57,6 +57,8 @@ QSV_PRESET = {"ultrafast": "veryfast", "veryfast": "veryfast", "fast": "fast", "
 TITLE_WORKERS = 3
 AUTO_CLEAR_SEC = 5  # แถวที่เสร็จแล้วค้างให้เห็นกี่วินาทีก่อนล้างอัตโนมัติ
 
+NAME_MAX = 70  # ความยาวชื่อไฟล์สูงสุด (ตัวอักษร ไม่รวมนามสกุล) ค่าเริ่มต้น
+
 DEFAULTS = {
     "out_dir": os.path.join(APP_DIR, "PH"),
     "format": "MP4 ตรง (ไม่ใช้ m3u8)",
@@ -71,6 +73,7 @@ DEFAULTS = {
     "frags": 16,
     "auto_clear": True,
     "max_pages": 5,
+    "name_max": NAME_MAX,
     "lang": "en",
     "resolution": "สูงสุด",
 }
@@ -543,10 +546,18 @@ def find_media(page):
     return ""
 
 
-def safe_filename(name):
+ID_ROOM = 16    # เผื่อที่ให้ " [รหัสคลิป]" ท้ายชื่อ (รหัสส่วนใหญ่ยาว 11–15 ตัว)
+
+
+def safe_filename(name, limit=150):
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", name)
-    name = re.sub(r"\s+", " ", name).strip(" .")[:150]
+    name = re.sub(r"\s+", " ", name).strip(" .")[:limit].rstrip(" .")
     return name.replace("%", "%%")
+
+
+def default_outtmpl(limit):
+    """ชื่อไฟล์ = ชื่อเรื่อง (ตัดให้สั้น) + [รหัสคลิป] รวมแล้วไม่เกิน limit ตัวอักษร (ไม่นับนามสกุล)"""
+    return f"%(title).{max(10, limit - ID_ROOM)}s [%(id)s].%(ext)s"
 
 
 # คุณภาพต่อขนาดไฟล์ของแต่ละตัว (มากกว่า = ดีกว่า) ใช้ตัดสินเมื่อความเร็วผ่านเกณฑ์แล้ว
@@ -1043,6 +1054,7 @@ class App(tk.Tk):
         self.var_update = tk.BooleanVar(value=s["update_on_start"])
         self.var_auto_clear = tk.BooleanVar(value=s["auto_clear"])
         self.var_max_pages = tk.IntVar(value=s["max_pages"])
+        self.var_name_max = tk.IntVar(value=s["name_max"])
         self.done_count = 0  # จำนวนที่เสร็จในรอบนี้ (นับแม้ถูกล้างออกจากคิวไปแล้ว)
         self.var_max_dl = tk.IntVar(value=s["max_dl"])
         self.var_max_conv = tk.IntVar(value=s["max_conv"])
@@ -1178,6 +1190,8 @@ class App(tk.Tk):
         ttk.Spinbox(r1b, from_=1, to=50, textvariable=self.var_max_pages, width=4).pack(side="left", padx=4)
         ttk.Label(r1b, text="ชิ้นส่วนพร้อมกัน:").pack(side="left", padx=(12, 0))
         ttk.Spinbox(r1b, from_=1, to=32, textvariable=self.var_frags, width=4).pack(side="left", padx=4)
+        ttk.Label(r1b, text="ชื่อไฟล์ยาวสุด:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(r1b, from_=30, to=150, increment=5, textvariable=self.var_name_max, width=4).pack(side="left", padx=4)
         ttk.Checkbutton(r1b, text="เช็คอัปเดตตอนเปิด", variable=self.var_update).pack(side="right")
 
         conv = ttk.LabelFrame(self, text="ตั้งค่าการแปลง H.265 (ใช้กับคลิปที่ติ๊ก ☑ ในช่อง \"แปลง\")")
@@ -1634,7 +1648,7 @@ class App(tk.Tk):
             "cookies": from_display(self.var_cookies.get(), BROWSERS), "update_on_start": self.var_update.get(),
             "auto_clear": self.var_auto_clear.get(), "max_pages": to_int(self.var_max_pages, 5, 1, 50),
             "max_dl": to_int(self.var_max_dl, 3, 1, 8), "max_conv": to_int(self.var_max_conv, 1, 1, 4),
-            "frags": to_int(self.var_frags, 16, 1, 32),
+            "frags": to_int(self.var_frags, 16, 1, 32), "name_max": to_int(self.var_name_max, NAME_MAX, 30, 150),
         })
 
     def browse_out(self):
@@ -1802,7 +1816,7 @@ class App(tk.Tk):
             "res": RESOLUTIONS.get(from_display(self.var_res.get(), RESOLUTIONS), 0),
             "cookies": self._cookie_args(),
             "aria2c": self.var_aria.get(),
-            "frags": to_int(self.var_frags, 16, 1, 32),
+            "frags": to_int(self.var_frags, 16, 1, 32), "name_max": to_int(self.var_name_max, NAME_MAX, 30, 150),
             "crf": to_int(self.var_crf, DEFAULTS["crf"], 0, 51),
             "preset": self.var_preset.get(),
             "encoder": enc_name(self.var_encoder.get()) if self.bench_ready else CPU_ENC,
@@ -1812,7 +1826,9 @@ class App(tk.Tk):
     def build_args(self, url, opts, pathfile=None, extra=(), outtmpl=None, aria=True):
         args = [YTDLP, "--newline", "--no-colors", "--no-warnings", "--no-playlist", "--encoding", "utf-8",
                 "--ffmpeg-location", BIN_DIR, "--js-runtimes", "deno",
-                "-P", opts["out"], "-o", outtmpl or "%(title).150B [%(id)s].%(ext)s",
+                "-P", opts["out"], "-o", outtmpl or default_outtmpl(opts.get("name_max", NAME_MAX)),
+                # กันเกินอีกชั้น ถ้ารหัสคลิปยาวผิดปกติ
+                "--trim-filenames", str(opts.get("name_max", NAME_MAX)),
                 "--progress-template",
                 "download:[P]%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
                 "|%(progress.downloaded_bytes)s",
@@ -1940,7 +1956,7 @@ class App(tk.Tk):
 
         def attempt(target, extra=(), outtmpl=None, aria=True, exclude=None):
             if opts.get("name"):  # ผู้ใช้ตั้งชื่อเอง
-                outtmpl = safe_filename(opts["name"]) + ".%(ext)s"
+                outtmpl = safe_filename(opts["name"], opts.get("name_max", NAME_MAX)) + ".%(ext)s"
             o = dict(opts, exclude=exclude) if exclude else opts
             args = self.build_args(target, o, pathfile, extra, outtmpl, aria)
             self.events.put(("log", f"[#{item_id}] > " + subprocess.list2cmdline(args[1:])))
@@ -2060,7 +2076,7 @@ class App(tk.Tk):
                         scored.append((q, name, m, ref))
                 scored.sort(key=lambda x: x[0], reverse=True)
                 cands = [(n, m, r) for _, n, m, r in scored] or cands
-            fname = safe_filename(title) if title else None
+            fname = safe_filename(title, opts.get("name_max", NAME_MAX)) if title else None
             rc = -1
             for name, m, ref in cands:
                 if self.stopping:
