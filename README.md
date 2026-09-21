@@ -670,6 +670,10 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 
 เรียงจากใหม่ไปเก่า
 
+### Chrome Extension v1.0.2 (2026-09-21)
+
+- แก้ปุ่ม extension ขึ้นสีแดงทุกครั้ง: ขาดสิทธิ์ `activeTab` Chrome เลยไม่บอก URL ของแท็บ extension ไม่ได้ส่งอะไรเข้าแอปเลย ใครใช้ v1.0.1 ให้กด Reload ที่ `chrome://extensions`
+
 ### v1.2.5 (2026-09-21) — แก้ Chrome Extension ขึ้นสีแดง
 
 - Chrome เวอร์ชันใหม่ถามก่อน (preflight / Local Network Access) ทุกครั้งที่ extension จะยิงเข้า `127.0.0.1` แอปเดิมตอบปฏิเสธ เลยส่งลิงก์ไม่ได้ ตอนนี้ตอบอนุญาตเฉพาะ origin ของ extension (หน้าเว็บทั่วไปยังโดน 403 เหมือนเดิม)

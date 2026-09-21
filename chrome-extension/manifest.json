@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "YtdlpGUI Downloader",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Send the current page or a link to YtdlpGUI and start downloading right away.",
-  "permissions": ["contextMenus", "notifications"],
+  "permissions": ["activeTab", "contextMenus", "notifications"],
   "host_permissions": ["http://127.0.0.1:47777/*"],
   "background": { "service_worker": "background.js" },
   "action": {
