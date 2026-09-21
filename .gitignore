@@ -1,0 +1,26 @@
+# เครื่องมือที่โหลดด้วย setup.bat (ไฟล์ใหญ่ / เป็นโปรแกรมของคนอื่น)
+bin/
+_setup_tmp/
+
+# ตัวแอปที่ build แล้ว (แนบไว้ใน GitHub Releases แทน)
+*.exe
+build/
+dist/
+_newbuild/
+*.spec
+__pycache__/
+
+# ข้อมูลส่วนตัวของผู้ใช้ ห้ามอัปขึ้น
+_browser/
+settings.json
+queue.json
+_tmp/
+
+# ไฟล์วิดีโอที่โหลดมา
+PH/
+*.mp4
+*.mkv
+*.webm
+*.part
+*.ytdl
+*.zip

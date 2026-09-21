@@ -1,0 +1,1836 @@
+"""YtdlpGUI - คิวโหลดวิดีโอด้วย yt-dlp แบบมีหน้าต่าง
+โหลดพร้อมกันได้หลายลิงก์ และแยกคิวแปลง H.265 ออกมาต่างหาก
+"""
+import html
+import itertools
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+import urllib.parse
+from urllib.parse import parse_qs, urljoin, urlparse
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+
+APP_NAME = "YtdlpGUI"
+APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+BIN_DIR = os.path.join(APP_DIR, "bin")
+TMP_DIR = os.path.join(APP_DIR, "_tmp")
+YTDLP = os.path.join(BIN_DIR, "yt-dlp.exe")
+FFMPEG = os.path.join(BIN_DIR, "ffmpeg.exe")
+SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
+QUEUE_FILE = os.path.join(APP_DIR, "queue.json")
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+FORMATS = {
+    "MP4 ตรง (ไม่ใช้ m3u8)": ["-f", "b[ext=mp4][protocol^=http]/b[ext=mp4]/bv*+ba/b", "--merge-output-format", "mp4"],
+    "ดีที่สุด (แยกภาพ+เสียง แล้วรวม)": ["-f", "bv*+ba/b", "--merge-output-format", "mp4"],
+}
+RESOLUTIONS = {"สูงสุด": 0, "1080p": 1080, "720p": 720}  # 0 = ไม่จำกัด
+BROWSERS = ["ไม่ใช้", "firefox", "chrome", "edge", "brave", "opera"]
+PRESETS = ["ultrafast", "veryfast", "fast", "medium", "slow", "slower"]
+CONTAINERS = ["mp4", "mkv"]
+# ตัวแปลง H.265: ชื่อที่โชว์ -> ffmpeg encoder (เรียงตามความเร็ว เลือกตัวแรกที่ใช้ได้เป็นค่าเริ่มต้น)
+ENCODERS = {
+    "NVIDIA (NVENC)": "hevc_nvenc",
+    "AMD (AMF)": "hevc_amf",
+    "Intel (QSV)": "hevc_qsv",
+    "CPU (x265)": "libx265",
+}
+CPU_ENC = "CPU (x265)"
+NV_PRESET = {"ultrafast": "p1", "veryfast": "p2", "fast": "p3", "medium": "p4", "slow": "p6", "slower": "p7"}
+AMF_QUALITY = {"ultrafast": "speed", "veryfast": "speed", "fast": "balanced", "medium": "balanced",
+               "slow": "quality", "slower": "quality"}
+QSV_PRESET = {"ultrafast": "veryfast", "veryfast": "veryfast", "fast": "fast", "medium": "medium",
+              "slow": "slow", "slower": "veryslow"}
+TITLE_WORKERS = 3
+AUTO_CLEAR_SEC = 5  # แถวที่เสร็จแล้วค้างให้เห็นกี่วินาทีก่อนล้างอัตโนมัติ
+
+DEFAULTS = {
+    "out_dir": os.path.join(APP_DIR, "PH"),
+    "format": "MP4 ตรง (ไม่ใช้ m3u8)",
+    "crf": 24,
+    "preset": "slow",
+    "container": "mp4",
+    "aria2c": True,
+    "cookies": "firefox",
+    "update_on_start": True,
+    "max_dl": 3,
+    "max_conv": 1,
+    "frags": 16,
+    "auto_clear": True,
+    "max_pages": 5,
+    "resolution": "สูงสุด",
+}
+
+# สถานะ
+WAIT, DL, WAIT_CONV, CONV, DONE, FAIL, STOPPED, HAVE = (
+    "รอ", "กำลังโหลด", "รอแปลง", "กำลังแปลง", "เสร็จ", "ล้มเหลว", "หยุด", "มีแล้ว")
+
+PROG_RE = re.compile(r"^\[P\]\s*([\d.]+)%\|(.*?)\|(.*?)(?:\|(\S*))?$")
+STALL_SEC = 90       # ขนาดไฟล์ไม่เพิ่มเลยนานเท่านี้ = ค้าง ให้ตัดแล้วโหลดต่อจากเดิม
+STALL_RETRIES = 5    # โหลดต่อจากที่ค้างได้กี่ครั้งต่อคลิป
+DUR_RE = re.compile(r"Duration: (\d+):(\d+):([\d.]+)")
+TIME_RE = re.compile(r"time=(\d+):(\d+):([\d.]+).*?speed=\s*([\d.]+x|N/A)")
+# keycode ของปุ่มตัวอักษร ใช้แทน keysym ที่เพี้ยนตอนแป้นพิมพ์เป็นภาษาไทย
+CTRL_KEYS = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>", 65: "<<SelectAll>>"}
+
+
+def load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def save_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def child_env():
+    env = os.environ.copy()
+    env["PATH"] = BIN_DIR + os.pathsep + env.get("PATH", "")
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+B62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+PACKER_RE = re.compile(r"}\('(.*?)',\s*(\d+),\s*(\d+),\s*'(.*?)'\.split\('\|'\)", re.S)
+MEDIA_RE = re.compile(r"""https?://[^\s"'<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?""", re.I)
+
+
+def is_missav(url):
+    return re.match(r"https?://(?:[\w-]+\.)*missav[\w-]*\.", url, re.I) is not None
+
+
+def is_7mm(url):
+    return re.match(r"https?://(?:[\w-]+\.)*7mm[\w-]*\.", url, re.I) is not None
+
+
+def is_page_site(url):
+    """เว็บที่ต้องอ่านหน้าเว็บเอง ไม่ส่งให้ yt-dlp ตรงๆ (yt-dlp ไม่รู้จัก หรืออ่านผิดเป็น playlist ขยะ)"""
+    return is_missav(url) or is_7mm(url)
+
+
+CHALLENGE_TITLES = ("just a moment", "attention required", "please wait", "checking your browser",
+                    "เพียงสักครู่", "โปรดรอสักครู่")
+BROWSER_DIR = os.path.join(APP_DIR, "_browser")
+CHROME_PATHS = [
+    os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+    os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+    os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+    os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+    os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+]
+_chrome_lock = threading.Lock()  # profile เดียวกันเปิดพร้อมกันไม่ได้ เลยให้ใช้ทีละลิงก์
+
+
+def is_challenge(page):
+    if not page:
+        return True
+    m = re.search(r"<title[^>]*>(.*?)</title>", page, re.I | re.S)
+    title = html.unescape(m.group(1)).strip().lower() if m else ""
+    return "_cf_chl_opt" in page or any(t in title for t in CHALLENGE_TITLES)
+
+
+def fetch_page_simple(url, timeout=20):
+    """ชั้น A: ปลอมตัวเป็น Chrome ด้วย curl_cffi ถ้าไม่มีค่อยใช้ urllib"""
+    try:
+        from curl_cffi import requests as cffi
+        r = cffi.get(url, impersonate="chrome", timeout=timeout)
+        return r.text if r.status_code == 200 else ""
+    except ImportError:
+        pass
+    except Exception:
+        return ""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def find_chrome():
+    return next((p for p in CHROME_PATHS if os.path.isfile(p)), "")
+
+
+def _chrome_ua(chrome):
+    # headless Chrome ใส่คำว่า HeadlessChrome ใน UA ซึ่ง Cloudflare บล็อก เลยตั้ง UA ให้เหมือน Chrome ปกติ
+    ver = "140"
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              f"(Get-Item '{chrome}').VersionInfo.ProductVersion"],
+                             capture_output=True, text=True, creationflags=NO_WINDOW, timeout=15).stdout
+        ver = out.strip().split(".")[0] or ver
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{ver}.0.0.0 Safari/537.36")
+
+
+_ua_cache = {}
+
+
+def fetch_page_chrome(url, visible=False, timeout=30, js=None):
+    """ชั้น C: เปิด Chrome จริง (profile แยกของแอป) อ่านหน้าเว็บผ่าน DevTools แล้วปิด"""
+    import socket
+    import websocket
+
+    chrome = find_chrome()
+    if not chrome:
+        return ""
+    if chrome not in _ua_cache:
+        _ua_cache[chrome] = _chrome_ua(chrome)
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    args = [chrome, f"--user-data-dir={BROWSER_DIR}", f"--remote-debugging-port={port}",
+            "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled", f"--user-agent={_ua_cache[chrome]}",
+            "--window-size=1100,850"]
+    if not visible:
+        args += ["--headless=new", "--mute-audio"]
+    args.append(url)
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=NO_WINDOW if not visible else 0)
+    ws = None
+    try:
+        deadline = time.time() + 15
+        ws_url = ""
+        while time.time() < deadline and not ws_url:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2) as r:
+                    tabs = json.loads(r.read().decode())
+                ws_url = next((t["webSocketDebuggerUrl"] for t in tabs
+                               if t.get("type") == "page" and t.get("webSocketDebuggerUrl")), "")
+            except Exception:
+                time.sleep(0.3)
+        if not ws_url:
+            return ""
+        ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
+        msg_id = [0]
+
+        def evaluate(expr):
+            msg_id[0] += 1
+            ws.send(json.dumps({"id": msg_id[0], "method": "Runtime.evaluate",
+                                "params": {"expression": expr, "returnByValue": True}}))
+            while True:
+                res = json.loads(ws.recv())
+                if res.get("id") == msg_id[0]:
+                    return res.get("result", {}).get("result", {}).get("value")
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if proc.poll() is not None:  # ผู้ใช้ปิดหน้าต่างเอง
+                return ""
+            try:
+                ready = evaluate("location.href.startsWith('http') && document.readyState === 'complete'"
+                                 " && document.body && document.body.innerText.length > 0")
+                page = evaluate("document.documentElement.outerHTML") if ready else ""
+            except Exception:
+                page = ""
+            if page and not is_challenge(page):
+                if not js:
+                    return page
+                try:
+                    val = evaluate(js)  # ให้ JavaScript ของเว็บทำงานแล้วดึงผลออกมา (คืนค่าว่าง = ยังไม่พร้อม)
+                except Exception:
+                    val = None
+                if val:
+                    return val
+            time.sleep(1)
+        return ""
+    except Exception:
+        return ""
+    finally:
+        try:
+            if ws:
+                ws.close()
+        except Exception:
+            pass
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True, creationflags=NO_WINDOW)
+
+
+def fetch_page(url, timeout=20, notify=None):
+    """อ่านหน้าเว็บแบบหลายชั้น: A. curl_cffi -> C. Chrome แบบซ่อน -> C. Chrome แบบเปิดหน้าต่างให้กดยืนยันเอง"""
+    page = fetch_page_simple(url, timeout)
+    if page and not is_challenge(page):
+        return page
+    if not find_chrome():
+        if notify:
+            notify("โดน Cloudflare บล็อก และไม่เจอ Chrome ในเครื่อง")
+        return ""
+    with _chrome_lock:
+        if notify:
+            notify("โดน Cloudflare บล็อก กำลังเปิด Chrome แบบซ่อนเพื่อผ่าน ...")
+        page = fetch_page_chrome(url, visible=False, timeout=30)
+        if page:
+            return page
+        if notify:
+            notify("ต้องยืนยันตัวตน: กดยืนยันในหน้าต่าง Chrome ที่เด้งขึ้นมา (รอ 3 นาที)")
+        return fetch_page_chrome(url, visible=True, timeout=180)
+
+
+def page_title(page):
+    m = (re.search(r"""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)""", page, re.I)
+         or re.search(r"<title[^>]*>(.*?)</title>", page, re.I | re.S))
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
+def unpack_js(page):
+    """แกะ JavaScript ที่ถูกบีบด้วย eval(function(p,a,c,k,e,d)...) ซึ่งเว็บชอบใช้ซ่อนลิงก์วิดีโอ"""
+    out = []
+    for p, a, c, k in PACKER_RE.findall(page):
+        a, words = int(a), k.split("|")
+        p = p.replace("\\'", "'")
+
+        def sub(m):
+            n = 0
+            for ch in m.group(0):
+                v = B62.find(ch)
+                if v < 0 or v >= a:
+                    return m.group(0)
+                n = n * a + v
+            return words[n] if n < len(words) and words[n] else m.group(0)
+
+        out.append(re.sub(r"\b\w+\b", sub, p))
+    return "\n".join(out)
+
+
+AD_HOSTS = re.compile(r"realsrv|whitetrafsa|labadena|tapioni|dtscout|exoclick|juicyads|trafficjunky|nettrck|"
+                      r"doubleclick|googlesyndication|adsterra|popads|cloudflareinsights", re.I)
+IFRAME_RE = re.compile(r"""<iframe[^>]+src=["']([^"']+)""", re.I)
+# 7mmtv: กดปุ่มเลือก server ทุกปุ่มด้วย JavaScript ของเว็บเอง แล้วอ่าน iframe ของแต่ละ server
+JS_7MM_SERVERS = r"""(function(){
+  var btns=[...document.querySelectorAll('.btn-server')].map(b=>b.textContent.trim());
+  if(!btns.length || typeof window['jfun_show_'+btns[0]]!=='function') return '';
+  var out=[];
+  for (const n of btns){
+    try{ window['jfun_show_'+n](); }catch(e){ continue; }
+    var f=[...document.querySelectorAll('iframe')].map(x=>x.src)
+      .filter(s=>/^https?:/.test(s) && !/realsrv|whitetrafsa|labadena|tapioni|dtscout/.test(s));
+    if(f.length) out.push([n,f[0]]);
+  }
+  return JSON.stringify(out);
+})()"""
+
+
+def fetch_with_referer(url, referer, timeout=20):
+    try:
+        from curl_cffi import requests as cffi
+        r = cffi.get(url, impersonate="chrome", headers={"Referer": referer}, timeout=timeout)
+        return r.text if r.status_code == 200 else ""
+    except Exception:
+        return ""
+
+
+def resolve_embed(embed, referer, depth=0):
+    """เปิดหน้า player ของแต่ละ server หาลิงก์ m3u8/mp4 ถ้าไม่เจอให้ตาม iframe ที่ซ้อนอยู่ข้างในอีกชั้น
+    คืนค่า (ลิงก์วิดีโอ, หน้าที่ใช้เป็น referer)"""
+    if embed.startswith("//"):
+        embed = "https:" + embed
+    page = fetch_with_referer(embed, referer)
+    media = find_media(page)
+    if media:
+        return media, embed
+    if depth < 2:
+        for f in IFRAME_RE.findall(page):
+            if f.startswith("//"):
+                f = "https:" + f
+            if f.startswith("http") and not AD_HOSTS.search(f):
+                media, ref = resolve_embed(f, embed, depth + 1)
+                if media:
+                    return media, ref
+    return "", ""
+
+
+def get_servers(url, page, notify=None):
+    """คืนค่า [(ชื่อ server, หน้า player)] ของหน้านี้"""
+    if is_7mm(url):
+        with _chrome_lock:
+            if notify:
+                notify("กำลังอ่านรายชื่อ server ด้วย Chrome ...")
+            raw = fetch_page_chrome(url, visible=False, timeout=40, js=JS_7MM_SERVERS)
+        try:
+            return [tuple(x) for x in json.loads(raw)]
+        except (ValueError, TypeError):
+            return []
+    out = []
+    for i, f in enumerate(IFRAME_RE.findall(page)):
+        if f.startswith("//"):
+            f = "https:" + f
+        if f.startswith("http") and not AD_HOSTS.search(f):
+            out.append((f"iframe{i + 1}", f))
+    return out
+
+
+def probe_quality(media, referer, limit=0):
+    """ถาม yt-dlp ว่าลิงก์นี้ได้ความละเอียด/bitrate สูงสุดเท่าไหร่ คืนค่า (สูง, bitrate) หรือ None ถ้าใช้ไม่ได้"""
+    origin = re.match(r"https?://[^/]+", referer).group(0)
+    args = [YTDLP, "-J", "--no-warnings", "--encoding", "utf-8", "--impersonate", "chrome",
+            "--referer", referer, "--add-headers", f"Origin:{origin}", media]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=child_env(), creationflags=NO_WINDOW, timeout=60)
+        info = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        info = None
+    if not info:
+        return None
+    fmts = info.get("formats") or [info]
+    qs = [(f.get("height") or 0, f.get("tbr") or 0) for f in fmts]
+    if limit:
+        # เอาตัวที่ชัดที่สุดที่ไม่เกินที่ตั้งไว้ ถ้าไม่มีเลยเอาตัวที่ใกล้ที่สุด (เล็กสุดที่เกิน)
+        within = [q for q in qs if q[0] <= limit]
+        return max(within) if within else min(qs, default=(0, 0))
+    return max(qs, default=(0, 0))
+
+
+# ---------- แกะลิงก์คลิปจากหน้ารวม (ค้นหา / หมวด / tag / นักแสดง / ช่อง) ----------
+LISTING_PATH = re.compile(r"/(search|tag|tags|category|categories|genre|genres|actress|actresses|actor|actors|"
+                          r"performer|performers|idol|idols|cast|star|stars|"
+                          r"model|models|pornstar|pornstars|channel|channels|studio|studios|maker|makers|"
+                          r"series|playlist|playlists|user|users|videos|page)(/|$)", re.I)
+NAV_PATH = re.compile(r"/(category|categories|tag|tags|page|author|feed|wp-[\w-]+|dmca|2257[\w-]*|contact[\w-]*|"
+                      r"about[\w-]*|privacy[\w-]*|terms[\w-]*|login|register|signup|search|genres?|actress(es)?|"
+                      r"actors?|performers?|idols?|cast|"
+                      r"stars?|models?|pornstars?|channels?|studios?|makers?|series|faq|help|upload|premium)(/|$)", re.I)
+MAX_LISTING_PAGES = 5
+MAX_LISTING_LINKS = 1000
+
+
+def is_listing_url(url):
+    """ลิงก์นี้น่าจะเป็นหน้ารวมหลายคลิป (ไม่ใช่หน้าคลิปเดียว)"""
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    if any(k in q for k in ("s", "q", "search", "search_query", "k", "keyword", "query")):
+        return True
+    if re.search(r"youtube\.com/(@|channel/|c/|user/|playlist)", url, re.I):
+        return True
+    return bool(LISTING_PATH.search(u.path))
+
+
+def _path_shape(path):
+    parts = [x for x in path.strip("/").split("/") if x]
+    return "/".join("9" if x.isdigit() else "x" for x in parts)
+
+
+def listing_links(page, base):
+    """หาลิงก์คลิปในหน้ารวม: เอาลิงก์ในเว็บเดียวกันที่รูปแบบ path เหมือนกันและมีมากที่สุด"""
+    host = urlparse(base).netloc.lower().removeprefix("www.")
+    seen, links = set(), []
+    for h in re.findall(r"""<a[^>]+href=["']([^"'#]+)""", page, re.I):
+        h = urljoin(base, html.unescape(h).strip())
+        pu = urlparse(h)
+        if pu.scheme not in ("http", "https") or pu.netloc.lower().removeprefix("www.") != host:
+            continue
+        if pu.query or NAV_PATH.search(pu.path) or pu.path.strip("/") == "":
+            continue
+        key = pu.path.rstrip("/")
+        if key in seen or h.rstrip("/") == base.split("?")[0].rstrip("/"):
+            continue
+        seen.add(key)
+        links.append(h)
+    groups = {}
+    for h in links:
+        groups.setdefault(_path_shape(urlparse(h).path), []).append(h)
+    groups = {k: v for k, v in groups.items() if len(v) >= 2 and k}
+    if not groups:
+        return []
+    return max(groups.items(), key=lambda kv: (len(kv[1]), kv[0].count("/")))[1]
+
+
+def next_page_url(page, base):
+    m = (re.search(r"""<link[^>]+rel=["']next["'][^>]+href=["']([^"']+)""", page, re.I)
+         or re.search(r"""<a[^>]+rel=["']next["'][^>]+href=["']([^"']+)""", page, re.I)
+         or re.search(r"""<a[^>]+class=["'][^"']*\bnext\b[^"']*["'][^>]+href=["']([^"']+)""", page, re.I)
+         or re.search(r"""<a[^>]+href=["']([^"']+)["'][^>]+class=["'][^"']*\bnext\b""", page, re.I))
+    if m:
+        return urljoin(base, html.unescape(m.group(1)))
+    # ไม่มีลิงก์ "ถัดไป" ตรงๆ: หาลิงก์เลขหน้า (/page/N/, ?page=N, ?paged=N) ที่เป็นหน้าถัดจากหน้านี้
+    num = re.compile(r"(?:/page/|[?&](?:page|paged|pg)=)(\d+)", re.I)
+    cur = num.search(base)
+    want = (int(cur.group(1)) if cur else 1) + 1
+    host = urlparse(base).netloc
+    for h in re.findall(r"""<a[^>]+href=["']([^"'#]+)""", page, re.I):
+        h = urljoin(base, html.unescape(h))
+        m = num.search(h)
+        if m and int(m.group(1)) == want and urlparse(h).netloc == host:
+            return h
+    return ""
+
+
+def listing_folder(url):
+    """ตั้งชื่อโฟลเดอร์จากลิงก์หน้ารวม: ใช้คำค้นก่อน ถ้าไม่มีใช้ท้าย path (เช่น /actress/ririsu-amano/)"""
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    for k in ("s", "q", "search", "search_query", "k", "keyword", "query"):
+        if q.get(k) and q[k][0].strip():
+            return safe_filename(q[k][0].strip()).replace("%%", "%")
+    parts = [x for x in u.path.strip("/").split("/")
+             if x and not x.isdigit() and not LISTING_PATH.search("/" + x + "/")
+             and x.lower() not in ("en", "th", "ja", "cn", "zh", "ko", "dm", "videos", "page")]
+    name = (parts[-1] if parts else u.netloc).replace("-", " ").replace("_", " ")
+    return safe_filename(urllib.parse.unquote(name)).replace("%%", "%") or "listing"
+
+
+def expand_listing(url, notify=None, stop=lambda: False, max_pages=MAX_LISTING_PAGES):
+    """แกะลิงก์คลิปทั้งหมดจากหน้ารวม คืน list ลิงก์ (ว่าง = แกะไม่ได้)"""
+    # 1) เว็บที่ yt-dlp รู้จัก (YouTube channel/playlist, pornhub model ฯลฯ) ให้ yt-dlp แกะเอง
+    if notify:
+        notify("กำลังถาม yt-dlp ว่ามีคลิปอะไรบ้าง ...")
+    try:
+        r = subprocess.run([YTDLP, "--flat-playlist", "--no-warnings", "--encoding", "utf-8",
+                            "--playlist-end", str(MAX_LISTING_LINKS), "--print", "%(extractor)s\t%(url)s", url],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=child_env(), creationflags=NO_WINDOW, timeout=120)
+        rows = [l.split("\t", 1) for l in r.stdout.splitlines() if "\t" in l]
+        urls = [u for ex, u in rows if u.startswith("http") and not ex.lower().startswith("generic")]
+        if len(urls) >= 2:
+            return list(dict.fromkeys(urls))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # 2) อ่านหน้าเว็บเอง ตามหน้าถัดไปได้ MAX_LISTING_PAGES หน้า
+    out, page_url = [], url
+    for n in range(max_pages):
+        if stop() or not page_url:
+            break
+        if notify:
+            notify(f"กำลังอ่านหน้า {n + 1}/{max_pages} ... (ได้แล้ว {len(out)} ลิงก์)")
+        page = fetch_page(page_url, notify=notify)
+        found = listing_links(page, page_url)
+        new = [u for u in found if u not in out]
+        if not new:
+            break
+        out += new
+        if len(out) >= MAX_LISTING_LINKS:
+            break
+        nxt = next_page_url(page, page_url)
+        page_url = nxt if nxt and nxt != page_url else ""
+    return out[:MAX_LISTING_LINKS]
+
+
+def find_media(page):
+    text = (page + "\n" + unpack_js(page)).replace("\\/", "/")
+    urls = list(dict.fromkeys(MEDIA_RE.findall(text)))
+    urls = [u for u in urls if not re.search(r"preview|thumb|trailer|sample", u, re.I)]
+    for good in (r"(playlist|master)\.m3u8", r"\.m3u8", r"\.mp4"):
+        for u in urls:
+            if re.search(good, u, re.I):
+                return u
+    return ""
+
+
+def safe_filename(name):
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")[:150]
+    return name.replace("%", "%%")
+
+
+# คุณภาพต่อขนาดไฟล์ของแต่ละตัว (มากกว่า = ดีกว่า) ใช้ตัดสินเมื่อความเร็วผ่านเกณฑ์แล้ว
+QUALITY_RANK = {"hevc_nvenc": 3, "hevc_qsv": 2, "hevc_amf": 1, "libx265": 0}
+MIN_FPS = 60  # ต้องแปลง 1080p ได้เร็วกว่านี้ถึงจะนับว่า "เร็วพอ"
+BENCH_FRAMES = {"libx265": (8, 32)}  # CPU ช้า ใช้เฟรมน้อยพอ
+BENCH_FRAMES_GPU = (30, 300)
+
+
+def _bench_time(name, frames, q, preset):
+    _, vargs = encode_args(name, q, preset)
+    args = [FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+            "-i", "testsrc2=size=1920x1080:rate=30", "-frames:v", str(frames),
+            "-pix_fmt", "yuv420p", *vargs, "-f", "null", "-"]
+    t = time.perf_counter()
+    r = subprocess.run(args, capture_output=True, creationflags=NO_WINDOW, timeout=120)
+    return time.perf_counter() - t if r.returncode == 0 else None
+
+
+def benchmark_encoders(q=24, preset="medium"):
+    """แปลงภาพทดสอบ 1080p ด้วยทุกตัว คืนค่า [(ชื่อ, fps), ...] เฉพาะตัวที่ใช้ได้
+    รัน 2 รอบ (สั้น/ยาว) แล้วเอาส่วนต่าง จะได้ไม่นับเวลาเปิดการ์ดจอ"""
+    results = []
+    for name, enc in ENCODERS.items():
+        n1, n2 = BENCH_FRAMES.get(enc, BENCH_FRAMES_GPU)
+        try:
+            t1 = _bench_time(name, n1, q, preset)
+            t2 = _bench_time(name, n2, q, preset) if t1 is not None else None
+        except (OSError, subprocess.SubprocessError):
+            t1 = t2 = None
+        if t1 is not None and t2 is not None:
+            # ส่วนต่างเวลาสั้นเกินไปจะวัดเพี้ยน เลยใช้เวลารวมของรอบยาวแทน
+            fps = (n2 - n1) / (t2 - t1) if t2 - t1 > 0.3 else n2 / t2
+            results.append((name, min(fps, n2 / max(t2 * 0.2, 1e-3))))
+    if not any(n == CPU_ENC for n, _ in results):
+        results.append((CPU_ENC, 0.0))
+    return results
+
+
+def pick_best(results):
+    fast = [r for r in results if r[1] >= MIN_FPS]
+    if fast:
+        return max(fast, key=lambda r: (QUALITY_RANK[ENCODERS[r[0]]], r[1]))[0]
+    return max(results, key=lambda r: r[1])[0]
+
+
+def enc_label(name, fps):
+    return f"{name} · {fps:.0f} fps" if fps else name
+
+
+def enc_name(label):
+    return label.split(" · ")[0] if label else CPU_ENC
+
+
+def encode_args(enc_name, q, preset):
+    """คืนค่า (args ก่อน -i, args ฝั่งวิดีโอ)"""
+    enc = ENCODERS.get(enc_name, "libx265")
+    q = str(q)
+    if enc == "hevc_nvenc":
+        return (["-hwaccel", "cuda"],
+                ["-c:v", enc, "-preset", NV_PRESET.get(preset, "p5"), "-tune", "hq", "-rc", "vbr",
+                 "-cq", q, "-b:v", "0", "-spatial-aq", "1", "-temporal-aq", "1", "-rc-lookahead", "32"])
+    if enc == "hevc_amf":
+        return ([], ["-c:v", enc, "-quality", AMF_QUALITY.get(preset, "balanced"), "-rc", "cqp",
+                     "-qp_i", q, "-qp_p", q])
+    if enc == "hevc_qsv":
+        return ([], ["-c:v", enc, "-preset", QSV_PRESET.get(preset, "medium"), "-global_quality", q])
+    return ([], ["-c:v", "libx265", "-crf", q, "-preset", preset, "-x265-params", "log-level=error"])
+
+
+VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".m4v", ".mov", ".ts", ".flv", ".avi")
+
+
+def url_key(url):
+    """แปลงลิงก์เป็นรหัสคลิป ให้ลิงก์ที่ต่างกันแต่เป็นคลิปเดียวกันได้รหัสเดียวกัน"""
+    u = url.strip()
+    m = re.search(r"pornhub[\w-]*\.\w+/.*[?&]viewkey=([\w-]+)", u, re.I)
+    if m:
+        return "ph:" + m.group(1).lower()
+    m = (re.search(r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|live/|embed/)|youtu\.be/)([\w-]{11})", u, re.I))
+    if m:
+        return "yt:" + m.group(1)
+    if is_missav(u):  # mirror หลายโดเมน หลายภาษา แต่ท้ายลิงก์คือรหัสคลิปเดียวกัน
+        return "missav:" + u.split("?")[0].rstrip("/").rsplit("/", 1)[-1].lower()
+    m = re.search(r"7mm[\w-]*\.\w+/.*?/(\d+)/", u, re.I)
+    if m:
+        return "7mm:" + m.group(1)
+    m = re.match(r"https?://(?:www\.|m\.)?([^/?#]+)([^?#]*)(\?[^#]*)?", u, re.I)
+    if not m:
+        return u.lower()
+    q = "&".join(sorted(x for x in (m.group(3) or "?")[1:].split("&")
+                        if x and not re.match(r"(utm_|fbclid|gclid|si=|feature=|t=)", x)))
+    return f"{m.group(1).lower()}{m.group(2).rstrip('/')}" + (f"?{q}" if q else "")
+
+
+def norm_name(text):
+    """ตัดสัญลักษณ์ออก เหลือแต่ตัวอักษร/ตัวเลข (รวมภาษาไทย) ไว้เทียบชื่อ"""
+    return re.sub(r"[\W_]+", "", text.lower())
+
+
+def find_existing(folder, title, url=""):
+    """หาไฟล์วิดีโอในโฟลเดอร์ที่น่าจะเป็นคลิปเดียวกัน (เทียบชื่อ หรือรหัสคลิปในวงเล็บ [..]) คืน path หรือ ''"""
+    try:
+        names = [n for n in os.listdir(folder) if n.lower().endswith(VIDEO_EXTS) and ".h265-tmp." not in n]
+    except OSError:
+        return ""
+    key = url_key(url).split(":", 1)[-1] if url else ""
+    nt = norm_name(title) if title else ""
+    for n in names:
+        stem = os.path.splitext(n)[0]
+        m = re.search(r"\[([\w-]+)\]$", stem)
+        if m and key and m.group(1).lower() == key.lower():
+            return os.path.join(folder, n)
+        if not nt:
+            continue
+        ns = norm_name(re.sub(r"\s*\[[\w-]+\]$", "", stem))
+        # yt-dlp ตัดชื่อยาวให้สั้นลง เลยยอมให้ขึ้นต้นตรงกันถ้ายาวพอ
+        if ns and (ns == nt or (min(len(ns), len(nt)) >= 30 and (ns.startswith(nt) or nt.startswith(ns)))):
+            return os.path.join(folder, n)
+    return ""
+
+
+NO_MEDIA = -2  # หาลิงก์วิดีโอไม่เจอ
+
+
+def fail_reason(out):
+    """สรุปสาเหตุจาก output ของ yt-dlp ให้อ่านง่าย"""
+    m = re.search(r"HTTP Error (\d+)", out)
+    if m:
+        return f"HTTP {m.group(1)}"
+    for key, msg in (("stalled", "ค้างหลายรอบ ลองใหม่ทีหลัง"), ("Unsupported URL", "เว็บไม่รองรับ"), ("Requested format is not available", "ไม่มีรูปแบบที่เลือก"),
+                     ("Private video", "คลิปส่วนตัว"), ("Sign in", "ต้องล็อกอิน"), ("timed out", "หมดเวลา"),
+                     ("cookies", "อ่าน cookie ไม่ได้")):
+        if key.lower() in out.lower():
+            return msg
+    return ""
+
+
+def to_int(var, default, lo, hi):
+    try:
+        return max(lo, min(hi, int(var.get())))
+    except (tk.TclError, ValueError):
+        return default
+
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(APP_NAME)
+        self.geometry("1000x680")
+        self.minsize(820, 540)
+
+        s = {**DEFAULTS, **load_json(SETTINGS_FILE, {})}
+        self.var_out = tk.StringVar(value=s["out_dir"])
+        self.var_format = tk.StringVar(value=s["format"] if s["format"] in FORMATS else DEFAULTS["format"])
+        self.var_res = tk.StringVar(value=s["resolution"] if s["resolution"] in RESOLUTIONS else "สูงสุด")
+        self.var_crf = tk.IntVar(value=s["crf"])
+        self.var_preset = tk.StringVar(value=s["preset"])
+        self.var_container = tk.StringVar(value=s["container"] if s["container"] in CONTAINERS else "mp4")
+        self.var_aria = tk.BooleanVar(value=s["aria2c"])
+        self.var_cookies = tk.StringVar(value=s["cookies"])
+        self.var_update = tk.BooleanVar(value=s["update_on_start"])
+        self.var_auto_clear = tk.BooleanVar(value=s["auto_clear"])
+        self.var_max_pages = tk.IntVar(value=s["max_pages"])
+        self.done_count = 0  # จำนวนที่เสร็จในรอบนี้ (นับแม้ถูกล้างออกจากคิวไปแล้ว)
+        self.var_max_dl = tk.IntVar(value=s["max_dl"])
+        self.var_max_conv = tk.IntVar(value=s["max_conv"])
+        self.var_frags = tk.IntVar(value=s["frags"])
+        self.var_encoder = tk.StringVar(value="กำลังทดสอบ ...")
+        self.var_url = tk.StringVar()
+        self.var_status = tk.StringVar(value="พร้อม")
+
+        self.items = []
+        self.ids = itertools.count(1)
+        self.events = queue.Queue()
+        self.procs = {}  # item id -> Popen
+        self.procs_lock = threading.Lock()
+        self.active_dl = 0
+        self.active_conv = 0
+        self.running = False
+        self.stopping = False
+        self.busy_updating = False
+        self.title_queue = queue.Queue()
+        self.cancelled = set()  # id ของคลิปที่ผู้ใช้เอาติ๊กแปลงออกระหว่างแปลง
+
+        os.makedirs(TMP_DIR, exist_ok=True)
+        self._build_ui()
+        for _ in range(TITLE_WORKERS):
+            threading.Thread(target=self._title_worker, daemon=True).start()
+        for it in load_json(QUEUE_FILE, []):
+            if isinstance(it, dict) and it.get("url"):
+                if self._add_item(it["url"], it.get("title", ""), save=False, file=it.get("file", ""),
+                                  convert=bool(it.get("convert", False)), subdir=it.get("subdir", "")):
+                    self.items[-1]["custom_title"] = bool(it.get("custom_title", False))
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.bench_ready = False
+        threading.Thread(target=lambda: self.events.put(("encoders", benchmark_encoders())), daemon=True).start()
+        self.after(100, self._pump)
+
+        if not os.path.isfile(YTDLP):
+            messagebox.showerror(APP_NAME, f"ไม่เจอ yt-dlp.exe ที่\n{YTDLP}")
+        elif self.var_update.get():
+            self.run_update()
+
+    # ---------- UI ----------
+    def _build_ui(self):
+        style = ttk.Style(self)
+        if "vista" in style.theme_names():
+            style.theme_use("vista")
+        self.option_add("*Font", ("Segoe UI", 10))
+        pad = {"padx": 8, "pady": 4}
+        self.bind_all("<Control-KeyPress>", self._on_ctrl_key)
+
+        top = ttk.LabelFrame(self, text="เพิ่มลิงก์ (Ctrl+V วางแล้วเข้าคิวทันที วางหลายลิงก์พร้อมกันได้)")
+        top.pack(fill="x", **pad)
+        self.ent_url = ttk.Entry(top, textvariable=self.var_url)
+        self.ent_url.pack(side="left", fill="x", expand=True, padx=6, pady=6)
+        self.ent_url.bind("<Return>", lambda e: self.add_urls())
+        self.ent_url.focus_set()
+        ttk.Button(top, text="วางจากคลิปบอร์ด", command=self.paste_urls).pack(side="left", padx=2)
+        ttk.Button(top, text="เพิ่มเข้าคิว", command=self.add_urls).pack(side="left", padx=6)
+
+        mid = ttk.LabelFrame(self, text="คิว")
+        mid.pack(fill="both", expand=True, **pad)
+        cols = ("no", "title", "url", "folder", "status", "progress", "conv")
+        self.conv_col = f"#{cols.index('conv') + 1}"
+        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
+        for c, t, w, st in [("no", "#", 40, False), ("title", "ชื่อ", 360, True), ("url", "ลิงก์", 180, True),
+                            ("folder", "โฟลเดอร์ย่อย", 110, False),
+                            ("status", "สถานะ", 110, False), ("progress", "ความคืบหน้า", 200, False),
+                            ("conv", "แปลง", 55, False)]:
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, stretch=st, anchor="w" if c in ("title", "url") else "center")
+        sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        sb.pack(side="left", fill="y", pady=6)
+        self.tree.bind("<Delete>", lambda e: self.remove_selected())
+        self.tree.bind("<Double-1>", self._copy_url)
+        self.tree.bind("<Button-3>", self._on_right_click)
+        self.menu = tk.Menu(self, tearoff=0)
+        self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<space>", lambda e: self.toggle_convert_selected() or "break")
+        self.tree.heading("conv", command=self.toggle_convert_all)
+
+        qbtn = ttk.Frame(self)
+        qbtn.pack(fill="x", padx=8)
+        ttk.Button(qbtn, text="ลบที่เลือก", command=self.remove_selected).pack(side="left")
+        ttk.Button(qbtn, text="ล้างที่เสร็จแล้ว", command=self.clear_done).pack(side="left", padx=4)
+        ttk.Checkbutton(qbtn, text="ล้างอัตโนมัติ", variable=self.var_auto_clear,
+                        command=self.save_settings).pack(side="left", padx=(0, 8))
+        ttk.Button(qbtn, text="ลองใหม่ที่ล้มเหลว", command=self.retry_failed).pack(side="left")
+        ttk.Button(qbtn, text="เปิดโฟลเดอร์", command=self.open_folder).pack(side="left", padx=4)
+        ttk.Button(qbtn, text="ดึงชื่อใหม่", command=self.refetch_titles).pack(side="left")
+        ttk.Label(qbtn, text="คลิก ☐ = สลับแปลง/ไม่แปลง (เลือกหลายแถวแล้วกด Space ได้) · ดับเบิลคลิก = คัดลอกลิงก์",
+                  foreground="gray").pack(side="right")
+
+        opt = ttk.LabelFrame(self, text="ตั้งค่า")
+        opt.pack(fill="x", **pad)
+        r0 = ttk.Frame(opt)
+        r0.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(r0, text="โหลดลง:").pack(side="left")
+        ttk.Entry(r0, textvariable=self.var_out).pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(r0, text="เลือก...", command=self.browse_out).pack(side="left")
+
+        r1 = ttk.Frame(opt)
+        r1.pack(fill="x", padx=6, pady=2)
+        ttk.Label(r1, text="รูปแบบ:").pack(side="left")
+        ttk.Combobox(r1, textvariable=self.var_format, values=list(FORMATS), state="readonly",
+                     width=30).pack(side="left", padx=6)
+        ttk.Label(r1, text="ความชัด:").pack(side="left", padx=(8, 0))
+        ttk.Combobox(r1, textvariable=self.var_res, values=list(RESOLUTIONS), state="readonly",
+                     width=7).pack(side="left", padx=4)
+        ttk.Label(r1, text="Cookies จาก:").pack(side="left", padx=(12, 0))
+        ttk.Combobox(r1, textvariable=self.var_cookies, values=BROWSERS, state="readonly",
+                     width=10).pack(side="left", padx=6)
+        ttk.Checkbutton(r1, text="ใช้ aria2c (โหลดเร็ว)", variable=self.var_aria).pack(side="left", padx=12)
+        ttk.Label(r1, text="โหลดพร้อมกัน:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(r1, from_=1, to=8, textvariable=self.var_max_dl, width=4,
+                    state="readonly").pack(side="left", padx=4)
+        ttk.Label(r1, text="ลิงก์").pack(side="left")
+        ttk.Label(r1, text="หน้ารวมสูงสุด:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(r1, from_=1, to=50, textvariable=self.var_max_pages, width=4).pack(side="left", padx=4)
+        ttk.Label(r1, text="ชิ้นส่วนพร้อมกัน:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(r1, from_=1, to=32, textvariable=self.var_frags, width=4).pack(side="left", padx=4)
+
+        ttk.Checkbutton(r1, text="เช็คอัปเดตตอนเปิด", variable=self.var_update).pack(side="right")
+
+        conv = ttk.LabelFrame(self, text="ตั้งค่าการแปลง H.265 (ใช้กับคลิปที่ติ๊ก ☑ ในช่อง \"แปลง\")")
+        conv.pack(fill="x", padx=8, pady=4)
+        r2 = ttk.Frame(conv)
+        r2.pack(fill="x", padx=6, pady=6)
+        ttk.Label(r2, text="ตัวแปลง:").pack(side="left")
+        self.cmb_encoder = ttk.Combobox(r2, textvariable=self.var_encoder, values=[CPU_ENC],
+                                        state="readonly", width=24)
+        self.cmb_encoder.pack(side="left", padx=4)
+        ttk.Label(r2, text="ไฟล์:").pack(side="left", padx=(8, 0))
+        self.cmb_container = ttk.Combobox(r2, textvariable=self.var_container, values=CONTAINERS,
+                                          state="readonly", width=5)
+        self.cmb_container.pack(side="left", padx=4)
+        ttk.Label(r2, text="คุณภาพ:").pack(side="left", padx=(8, 0))
+        self.spin_crf = ttk.Spinbox(r2, from_=16, to=34, textvariable=self.var_crf, width=4)
+        self.spin_crf.pack(side="left", padx=4)
+        ttk.Label(r2, text="Preset:").pack(side="left", padx=(8, 0))
+        self.cmb_preset = ttk.Combobox(r2, textvariable=self.var_preset, values=PRESETS,
+                                       state="readonly", width=9)
+        self.cmb_preset.pack(side="left", padx=4)
+        ttk.Label(r2, text="แปลงพร้อมกัน:").pack(side="left", padx=(8, 0))
+        self.spin_conv = ttk.Spinbox(r2, from_=1, to=4, textvariable=self.var_max_conv, width=4,
+                                     state="readonly")
+        self.spin_conv.pack(side="left", padx=4)
+
+        act = ttk.Frame(self)
+        act.pack(fill="x", padx=8, pady=4)
+        self.btn_start = ttk.Button(act, text="▶ เริ่มโหลด", command=self.start)
+        self.btn_start.pack(side="left")
+        self.btn_stop = ttk.Button(act, text="■ หยุด", command=self.stop, state="disabled")
+        self.btn_stop.pack(side="left", padx=4)
+        self.btn_update = ttk.Button(act, text="อัปเดต yt-dlp", command=self.run_update)
+        self.btn_update.pack(side="left", padx=4)
+        ttk.Label(act, textvariable=self.var_status).pack(side="left", padx=12)
+
+        logf = ttk.LabelFrame(self, text="Log")
+        logf.pack(fill="both", **pad)
+        self.log = tk.Text(logf, height=8, wrap="none", font=("Consolas", 9), state="disabled")
+        lsb = ttk.Scrollbar(logf, orient="vertical", command=self.log.yview)
+        self.log.configure(yscrollcommand=lsb.set)
+        self.log.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        lsb.pack(side="left", fill="y", pady=6)
+
+    def _on_ctrl_key(self, e):
+        w = e.widget
+        if e.keycode == 86 and w in (self.ent_url, self.tree):
+            self.paste_urls()  # วางลิงก์ = เข้าคิวเลย
+            return "break"
+        # แป้นภาษาไทยทำให้ keysym ไม่ใช่ v/c/x/a ทำให้ Tk ไม่รู้จักทางลัด ต้องยิงเหตุการณ์เอง
+        ev = CTRL_KEYS.get(e.keycode)
+        if ev and e.keysym.lower() not in ("v", "c", "x", "a") and isinstance(w, (tk.Entry, ttk.Entry, tk.Text)):
+            w.event_generate(ev)
+            return "break"
+        if e.keycode == 65 and isinstance(w, (tk.Entry, ttk.Entry)):
+            w.select_range(0, "end")
+            w.icursor("end")
+            return "break"
+        return None
+
+    def write_log(self, text):
+        self.log.configure(state="normal")
+        self.log.insert("end", text.rstrip("\n") + "\n")
+        if int(self.log.index("end-1c").split(".")[0]) > 3000:
+            self.log.delete("1.0", "500.0")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    # ---------- queue ----------
+    def _add_item(self, url, title="", save=True, file="", convert=False, subdir=""):
+        """คืน True ถ้าเพิ่มเข้าคิว, False ถ้าซ้ำกับคลิปที่อยู่ในคิวแล้ว"""
+        key = url_key(url)
+        dup = next((i for i in self.items if i["key"] == key), None)
+        if dup:
+            self.write_log(f"ข้ามลิงก์ซ้ำ (ซ้ำกับ #{self.items.index(dup) + 1}): {url}")
+            return False
+        it = {"id": next(self.ids), "url": url, "key": key, "title": title, "status": WAIT, "progress": "",
+              "file": "", "convert": convert, "converted": False, "cancel_conv": False, "force": False,
+              "subdir": subdir}
+        if file and os.path.isfile(file):
+            it["file"] = file
+            if convert:
+                it["status"], it["progress"] = WAIT_CONV, "โหลดแล้ว รอแปลง"
+            else:
+                it["status"], it["progress"] = DONE, "โหลดแล้ว (ไม่แปลง)"
+        self.items.append(it)
+        it["iid"] = self.tree.insert("", "end")
+        self._refresh(it)
+        if not title:
+            it["progress"] = "กำลังดึงชื่อ ..."
+            self._refresh(it)
+            self.title_queue.put((it["id"], url, self._cookie_args()))
+        else:
+            self._check_existing(it)
+        if save:
+            self.save_queue()
+        return True
+
+    def _dest(self, it):
+        """โฟลเดอร์ปลายทางของคลิปนี้ (โฟลเดอร์หลัก + โฟลเดอร์ย่อยถ้ามาจากหน้ารวม)"""
+        base = self.var_out.get().strip() or DEFAULTS["out_dir"]
+        return os.path.join(base, it["subdir"]) if it.get("subdir") else base
+
+    def _check_existing(self, it):
+        """ถ้ามีไฟล์คลิปนี้ในโฟลเดอร์ปลายทางอยู่แล้ว ให้ข้ามไม่ต้องโหลด (เว้นแต่กดลองใหม่เพื่อบังคับโหลด)"""
+        if it["status"] != WAIT or it["force"]:
+            return False
+        f = find_existing(self._dest(it), it["title"], it["url"])
+        if f:
+            it["status"], it["progress"], it["file"] = HAVE, os.path.basename(f), f
+            self._refresh(it)
+            self.write_log(f"มีไฟล์อยู่แล้ว ไม่โหลดซ้ำ: {f}")
+            return True
+        return False
+
+    def _check_title_dup(self, it):
+        """ชื่อคลิปซ้ำกับคลิปอื่นในคิว (ลิงก์ต่างกันแต่คลิปเดียวกัน) ให้เอาออกจากคิว"""
+        if not it["title"] or it["status"] != WAIT:
+            return False
+        nt = norm_name(it["title"])
+        dup = next((i for i in self.items if i is not it and i["title"] and norm_name(i["title"]) == nt), None)
+        if dup:
+            self.write_log(f"ข้ามคลิปซ้ำ (ชื่อเดียวกับ #{self.items.index(dup) + 1}): {it['url']}")
+            self.tree.delete(it["iid"])
+            self.items.remove(it)
+            self._renumber()
+            return True
+        return False
+
+    def _find(self, item_id):
+        return next((i for i in self.items if i["id"] == item_id), None)
+
+    def _refresh(self, it):
+        if self.tree.exists(it["iid"]):
+            idx = self.items.index(it) + 1
+            self.tree.item(it["iid"], values=(idx, it["title"] or it["file"] or "-", it["url"],
+                                              it.get("subdir", ""), it["status"], it["progress"],
+                                              "☑" if it["convert"] else "☐"))
+
+    def _renumber(self):
+        for it in self.items:
+            self._refresh(it)
+
+    def add_urls(self, text=None):
+        text = self.var_url.get() if text is None else text
+        urls = [u for u in re.split(r"\s+", text) if u.lower().startswith(("http://", "https://"))]
+        if not urls:
+            if text.strip():
+                self.var_status.set("ไม่เจอลิงก์ (ต้องขึ้นต้นด้วย http:// หรือ https://)")
+            return
+        urls = list(dict.fromkeys(urls))
+        listings = [u for u in urls if is_listing_url(u)]
+        singles = [u for u in urls if u not in listings]
+        added = sum(1 for u in singles if self._add_item(u, save=False))
+        self.save_queue()
+        self.var_url.set("")
+        skipped = len(singles) - added
+        msg = f"เพิ่ม {added} ลิงก์" + (f" (ข้ามลิงก์ซ้ำ {skipped})" if skipped else "")
+        if listings:
+            msg += f" · กำลังแกะลิงก์จากหน้ารวม {len(listings)} หน้า ..."
+            for u in listings:
+                self.expand_async(u)
+        self.var_status.set(msg)
+
+    def expand_async(self, url):
+        """แกะลิงก์คลิปจากหน้ารวมใน thread แยก แล้วส่งผลกลับมาเพิ่มเข้าคิว"""
+        pages = to_int(self.var_max_pages, 5, 1, 50)
+        self.write_log(f"แกะลิงก์คลิปจาก: {url} (สูงสุด {pages} หน้า)")
+
+        def work():
+            links = expand_listing(url, notify=lambda m: self.events.put(("notice", f"[แกะลิงก์] {m}")),
+                                   max_pages=pages)
+            self.events.put(("expanded", url, links, listing_folder(url)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def paste_urls(self):
+        try:
+            self.add_urls(self.clipboard_get())
+        except tk.TclError:
+            pass
+
+    def _copy_url(self, e):
+        iid = self.tree.identify_row(e.y)
+        it = next((i for i in self.items if i["iid"] == iid), None)
+        if it:
+            self.clipboard_clear()
+            self.clipboard_append(it["url"])
+            self.var_status.set("คัดลอกลิงก์แล้ว")
+
+    # ---------- right-click menu ----------
+    def _selected_items(self):
+        sel = set(self.tree.selection())
+        return [i for i in self.items if i["iid"] in sel]
+
+    def _on_right_click(self, e):
+        iid = self.tree.identify_row(e.y)
+        if not iid:
+            return
+        if iid not in self.tree.selection():
+            self.tree.selection_set(iid)
+        items = self._selected_items()
+        one = items[0] if len(items) == 1 else None
+        busy = any(i["status"] in (DL, CONV) for i in items)
+        m = self.menu
+        m.delete(0, "end")
+        m.add_command(label=f"รีเซ็ตสถานะ (กลับไปรอโหลด){'' if one else f'  [{len(items)} แถว]'}",
+                      command=self.menu_reset, state="disabled" if busy else "normal")
+        m.add_command(label="โหลดซ้ำ (ไม่สนว่ามีไฟล์แล้ว)", command=self.menu_force,
+                      state="disabled" if busy else "normal")
+        m.add_separator()
+        m.add_command(label="แก้ไขลิงก์ ...", command=lambda: self.menu_edit_url(one),
+                      state="normal" if one and not busy else "disabled")
+        m.add_command(label="แก้ไขชื่อ (ใช้เป็นชื่อไฟล์) ...", command=lambda: self.menu_edit_title(one),
+                      state="normal" if one and not busy else "disabled")
+        m.add_command(label="แกะลิงก์คลิปจากหน้านี้ (หน้ารวม/ค้นหา)", command=self.menu_expand,
+                      state="disabled" if busy else "normal")
+        m.add_command(label="ดึงชื่อใหม่", command=self.refetch_titles)
+        m.add_command(label="สลับ แปลง / ไม่แปลง", command=self.toggle_convert_selected)
+        m.add_separator()
+        m.add_command(label="คัดลอกลิงก์", command=lambda: self._copy_text("\n".join(i["url"] for i in items)))
+        has_file = bool(one and one["file"] and os.path.isfile(one["file"]))
+        m.add_command(label="เปิดไฟล์", command=lambda: os.startfile(one["file"]),
+                      state="normal" if has_file else "disabled")
+        m.add_command(label="เปิดโฟลเดอร์ที่มีไฟล์",
+                      command=lambda: subprocess.Popen(["explorer", "/select,", one["file"]]),
+                      state="normal" if has_file else "disabled")
+        m.add_separator()
+        m.add_command(label="ลบออกจากคิว", command=self.remove_selected, state="disabled" if busy else "normal")
+        m.tk_popup(e.x_root, e.y_root)
+
+    def _copy_text(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.var_status.set("คัดลอกแล้ว")
+
+    def _reset_item(self, it, force=False):
+        has_file = bool(it["file"]) and os.path.isfile(it["file"])
+        if not force and has_file and it["convert"] and not it["converted"] and it["status"] in (FAIL, STOPPED):
+            it["status"], it["progress"] = WAIT_CONV, "รอแปลง"  # โหลดแล้ว แค่แปลงไม่ผ่าน
+        else:
+            it["status"], it["progress"], it["file"] = WAIT, "โหลดซ้ำ" if force else "", ""
+            it["converted"], it["cancel_conv"] = False, False
+        it["force"] = force
+        self._refresh(it)
+
+    def menu_reset(self):
+        for it in self._selected_items():
+            if it["status"] not in (DL, CONV):
+                self._reset_item(it)
+                self._check_existing(it)
+        self.save_queue()
+        if self.running:
+            self._schedule()
+
+    def menu_expand(self):
+        """เอาแถวที่เลือกออก แล้วแกะลิงก์คลิปจากหน้านั้นมาใส่คิวแทน"""
+        for it in self._selected_items():
+            if it["status"] in (DL, CONV):
+                continue
+            self.tree.delete(it["iid"])
+            self.items.remove(it)
+            self.expand_async(it["url"])
+        self._renumber()
+        self.save_queue()
+
+    def menu_force(self):
+        for it in self._selected_items():
+            if it["status"] not in (DL, CONV):
+                self._reset_item(it, force=True)
+        self.save_queue()
+        if self.running:
+            self._schedule()
+
+    def menu_edit_url(self, it):
+        if not it:
+            return
+        new = simpledialog.askstring("แก้ไขลิงก์", "ลิงก์ใหม่:", initialvalue=it["url"], parent=self)
+        if not new or not new.strip() or new.strip() == it["url"]:
+            return
+        new = new.strip()
+        key = url_key(new)
+        dup = next((i for i in self.items if i is not it and i["key"] == key), None)
+        if dup:
+            messagebox.showwarning(APP_NAME, f"ลิงก์นี้ซ้ำกับแถว #{self.items.index(dup) + 1} อยู่แล้ว", parent=self)
+            return
+        it["url"], it["key"] = new, key
+        if not it.get("custom_title"):
+            it["title"] = ""
+        self._reset_item(it)
+        if not it["title"]:
+            it["progress"] = "กำลังดึงชื่อ ..."
+            self._refresh(it)
+            self.title_queue.put((it["id"], new, self._cookie_args()))
+        self.save_queue()
+
+    def menu_edit_title(self, it):
+        if not it:
+            return
+        new = simpledialog.askstring("แก้ไขชื่อ", "ชื่อใหม่ (ใช้เป็นชื่อไฟล์ตอนโหลด):",
+                                     initialvalue=it["title"], parent=self)
+        if new is None or not new.strip():
+            return
+        it["title"], it["custom_title"] = new.strip(), True
+        self._refresh(it)
+        self.save_queue()
+
+    def refetch_titles(self):
+        """ดึงชื่อใหม่ของแถวที่เลือก (ไม่เลือก = ทุกแถว)"""
+        sel = set(self.tree.selection())
+        cookies = self._cookie_args()
+        for it in self.items:
+            if (not sel or it["iid"] in sel) and it["status"] in (WAIT, FAIL, STOPPED, WAIT_CONV, DONE):
+                if it["status"] == WAIT:
+                    it["progress"] = "กำลังดึงชื่อ ..."
+                    self._refresh(it)
+                self.title_queue.put((it["id"], it["url"], cookies))
+
+    def _on_tree_click(self, e):
+        if self.tree.identify_region(e.x, e.y) != "cell" or self.tree.identify_column(e.x) != self.conv_col:
+            return None
+        iid = self.tree.identify_row(e.y)
+        it = next((i for i in self.items if i["iid"] == iid), None)
+        if it:
+            self._set_convert(it, not it["convert"])
+            self.save_queue()
+        return "break"
+
+    def toggle_convert_selected(self):
+        sel = [i for i in self.items if i["iid"] in set(self.tree.selection())]
+        if sel:
+            on = not all(i["convert"] for i in sel)
+            for it in sel:
+                self._set_convert(it, on)
+            self.save_queue()
+
+    def toggle_convert_all(self):
+        if self.items:
+            on = not all(i["convert"] for i in self.items)
+            for it in self.items:
+                self._set_convert(it, on)
+            self.save_queue()
+
+    def _set_convert(self, it, on):
+        """สลับว่าจะแปลงคลิปนี้ไหม มีผลทันทีแม้คลิปโหลดเสร็จหรือกำลังแปลงอยู่"""
+        it["convert"] = on
+        has_file = bool(it["file"]) and os.path.isfile(it["file"])
+        if on and it["status"] == DONE and not it["converted"] and has_file:
+            it["status"], it["progress"] = WAIT_CONV, "รอแปลง"
+            if not self.running:
+                self.var_status.set("มีคลิปรอแปลง กด ▶ เริ่มโหลด เพื่อเริ่มแปลง")
+        elif not on and it["status"] == WAIT_CONV:
+            it["status"], it["progress"] = DONE, "โหลดแล้ว (ไม่แปลง)"
+        elif not on and it["status"] == CONV:
+            it["cancel_conv"] = True
+            self.cancelled.add(it["id"])
+            with self.procs_lock:
+                p = self.procs.get(("conv", it["id"]))
+            if p and p.poll() is None:
+                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               creationflags=NO_WINDOW, capture_output=True)
+            it["progress"] = "กำลังยกเลิกแปลง ..."
+        self._refresh(it)
+        if self.running:
+            self._schedule()
+
+    def remove_selected(self):
+        sel = set(self.tree.selection())
+        for it in list(self.items):
+            if it["iid"] in sel and it["status"] not in (DL, CONV):
+                self.tree.delete(it["iid"])
+                self.items.remove(it)
+        self._renumber()
+        self.save_queue()
+
+    def clear_done(self):
+        for it in list(self.items):
+            if it["status"] in (DONE, HAVE):
+                self.tree.delete(it["iid"])
+                self.items.remove(it)
+        self._renumber()
+        self.save_queue()
+
+    def retry_failed(self):
+        for it in self.items:
+            if it["status"] == HAVE:  # กดลองใหม่ = ยืนยันว่าจะโหลดซ้ำจริงๆ
+                it["status"], it["progress"], it["file"], it["force"] = WAIT, "โหลดซ้ำ", "", True
+                self._refresh(it)
+            elif it["status"] in (FAIL, STOPPED):
+                # ถ้าโหลดเสร็จแล้วแต่แปลงไม่ผ่าน ให้กลับไปรอแปลง ไม่ต้องโหลดใหม่
+                has_file = bool(it["file"]) and os.path.isfile(it["file"])
+                it["status"] = (WAIT_CONV if it["convert"] else DONE) if has_file else WAIT
+                it["progress"] = ""
+                self._refresh(it)
+        self.save_queue()
+        if self.running:
+            self._schedule()
+
+    def save_queue(self):
+        save_json(QUEUE_FILE, [{"url": it["url"], "title": it["title"], "convert": it["convert"],
+                                "custom_title": it.get("custom_title", False), "subdir": it.get("subdir", ""),
+                                "file": it["file"] if it["status"] in (WAIT_CONV, CONV) else ""}
+                               for it in self.items if it["status"] not in (DONE, HAVE)])
+
+    def save_settings(self):
+        save_json(SETTINGS_FILE, {
+            "out_dir": self.var_out.get(), "format": self.var_format.get(), "resolution": self.var_res.get(),
+            "crf": to_int(self.var_crf, DEFAULTS["crf"], 0, 51), "preset": self.var_preset.get(),
+            "container": self.var_container.get(), "aria2c": self.var_aria.get(),
+            "cookies": self.var_cookies.get(), "update_on_start": self.var_update.get(),
+            "auto_clear": self.var_auto_clear.get(), "max_pages": to_int(self.var_max_pages, 5, 1, 50),
+            "max_dl": to_int(self.var_max_dl, 3, 1, 8), "max_conv": to_int(self.var_max_conv, 1, 1, 4),
+            "frags": to_int(self.var_frags, 16, 1, 32),
+        })
+
+    def browse_out(self):
+        d = filedialog.askdirectory(initialdir=self.var_out.get() or APP_DIR)
+        if d:
+            self.var_out.set(os.path.normpath(d))
+
+    def open_folder(self):
+        d = self.var_out.get()
+        os.makedirs(d, exist_ok=True)
+        os.startfile(d)
+
+    # ---------- processes ----------
+    def _run_proc(self, args, on_line, key=None):
+        p = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            env=child_env(), cwd=BIN_DIR, creationflags=NO_WINDOW,
+            text=True, encoding="utf-8", errors="replace", bufsize=1)
+        if key is not None:
+            with self.procs_lock:
+                self.procs[key] = p
+        buf = ""
+        # yt-dlp/ffmpeg ใช้ \r อัปเดตบรรทัดเดิม เลยอ่านทีละตัวแล้วตัดที่ \r หรือ \n
+        try:
+            while True:
+                ch = p.stdout.read(1)
+                if not ch:
+                    break
+                if ch in "\r\n":
+                    if buf.strip():
+                        on_line(buf)
+                    buf = ""
+                else:
+                    buf += ch
+            if buf.strip():
+                on_line(buf)
+            return p.wait()
+        finally:
+            if key is not None:
+                with self.procs_lock:
+                    self.procs.pop(key, None)
+
+    def _cookie_args(self):
+        c = self.var_cookies.get()
+        return ["--cookies-from-browser", c] if c in BROWSERS[1:] else []
+
+    def _title_worker(self):
+        while True:
+            item_id, url, cookies = self.title_queue.get()
+            title = ""
+            if not is_page_site(url):
+                lines = []
+                try:
+                    # %(title)j = ส่งเป็น JSON ไม่งั้นตัวอักษรไทยหายตอนส่งผ่าน pipe
+                    args = [YTDLP, "--skip-download", "--no-warnings", "--no-playlist", "--encoding", "utf-8",
+                            "--js-runtimes", "deno", "--print", "%(title)j", *cookies, url]
+                    self._run_proc(args, lines.append)
+                except OSError:
+                    pass
+                for l in lines:
+                    l = l.strip()
+                    if l.startswith('"'):
+                        try:
+                            title = json.loads(l).strip()
+                            break
+                        except ValueError:
+                            pass
+            if not title:
+                title = page_title(fetch_page(url, notify=lambda m: self.events.put(("notice", m))))
+            self.events.put(("title", item_id, title))
+
+    def run_update(self):
+        if self.running or self.busy_updating:
+            return
+        self.busy_updating = True
+        self.btn_start.configure(state="disabled")
+        self.btn_update.configure(state="disabled")
+        self.var_status.set("กำลังเช็คอัปเดต yt-dlp ...")
+
+        def work():
+            try:
+                rc = self._run_proc([YTDLP, "-U"], lambda l: self.events.put(("log", l)))
+            except OSError as e:
+                self.events.put(("log", f"อัปเดตไม่ได้: {e}"))
+                rc = -1
+            self.events.put(("update_done", rc))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _snapshot_options(self):
+        """อ่านค่าจากหน้าจอใน main thread แล้วส่งให้ thread ใช้ (Tk ห้ามแตะจาก thread อื่น)"""
+        return {
+            "out": self.var_out.get().strip() or DEFAULTS["out_dir"],
+            "format": FORMATS.get(self.var_format.get(), FORMATS[DEFAULTS["format"]]),
+            "res": RESOLUTIONS.get(self.var_res.get(), 0),
+            "cookies": self._cookie_args(),
+            "aria2c": self.var_aria.get(),
+            "frags": to_int(self.var_frags, 16, 1, 32),
+            "crf": to_int(self.var_crf, DEFAULTS["crf"], 0, 51),
+            "preset": self.var_preset.get(),
+            "encoder": enc_name(self.var_encoder.get()) if self.bench_ready else CPU_ENC,
+            "container": self.var_container.get(),
+        }
+
+    def build_args(self, url, opts, pathfile=None, extra=(), outtmpl=None, aria=True):
+        args = [YTDLP, "--newline", "--no-colors", "--no-warnings", "--no-playlist", "--encoding", "utf-8",
+                "--ffmpeg-location", BIN_DIR, "--js-runtimes", "deno",
+                "-P", opts["out"], "-o", outtmpl or "%(title).150B [%(id)s].%(ext)s",
+                "--progress-template",
+                "download:[P]%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
+                "|%(progress.downloaded_bytes)s",
+                # connection ที่เงียบเกิน 20 วิ ให้ตัดแล้วลองชิ้นนั้นใหม่ (ไม่งั้นค้างตลอดไปที่ 99.x%)
+                "--socket-timeout", "20"]
+        fmt = list(opts["format"])
+        if opts.get("exclude"):
+            # ตัดไฟล์ที่เพิ่งโหลดไม่ผ่านออก ให้ yt-dlp เลือกตัวที่ดีรองลงมา
+            i = fmt.index("-f") + 1
+            # ใช้ !~= (regex) เพราะ != ใช้กับ format_id ไม่ได้ผลใน yt-dlp
+            ex = "".join(f"[format_id!~='^{re.escape(x)}$']" for x in opts["exclude"])
+            fmt[i] = "/".join("+".join(p + ex if n == 0 else p for n, p in enumerate(alt.split("+")))
+                              for alt in fmt[i].split("/"))
+        args += fmt + opts["cookies"] + list(extra)
+        # ห้ามข้ามชิ้นที่โหลดไม่ได้ (ไม่งั้นได้วิดีโอที่ขาดเป็นช่วงๆ) โดน 429 ให้รอนานขึ้นเรื่อยๆ แล้วลองใหม่
+        args += ["--abort-on-unavailable-fragments", "--fragment-retries", "30",
+                 "--retry-sleep", "fragment:exp=1:30", "--retries", "10"]
+        if opts.get("res"):
+            # เลือกตัวที่ชัดที่สุดที่ไม่เกินที่ตั้งไว้ ถ้าไม่มีจะเอาตัวที่ใกล้ที่สุดแทน (ไม่ error)
+            args += ["-S", f"res:{opts['res']}"]
+        if opts["aria2c"] and aria:
+            args += ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 16 -s 16 -k 1M"]
+        # เว็บสตรีม (m3u8) จำกัดความเร็วต่อ connection ยิ่งโหลดหลายชิ้นพร้อมกันยิ่งเร็ว
+        args += ["-N", str(opts.get("frags", 16))]
+        if pathfile:
+            args += ["--print-to-file", "after_move:filepath", pathfile]
+        args.append(url)
+        return args
+
+    def start(self):
+        if self.running or self.busy_updating:
+            return
+        if not any(it["status"] in (WAIT, WAIT_CONV) for it in self.items):
+            self.var_status.set("ไม่มีลิงก์ที่รอโหลด")
+            return
+        self.opts = self._snapshot_options()
+        os.makedirs(self.opts["out"], exist_ok=True)
+        self.save_settings()
+        self.running = True
+        self.stopping = False
+        self.btn_start.configure(state="disabled")
+        self.btn_update.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self._schedule()
+
+    def _schedule(self):
+        """ตัวจัดคิว: เรียกจาก main thread เท่านั้น เลยไม่ต้องล็อก"""
+        if not self.running:
+            return
+        if not self.stopping:
+            max_dl = to_int(self.var_max_dl, 3, 1, 8)
+            max_conv = to_int(self.var_max_conv, 1, 1, 4)
+            for it in self.items:
+                if self.active_dl >= max_dl:
+                    break
+                if it["status"] == WAIT and self._check_existing(it):
+                    continue
+                if it["status"] == WAIT:
+                    it["status"], it["progress"] = DL, "เริ่ม ..."
+                    self._refresh(it)
+                    self.active_dl += 1
+                    name = it["title"] if it.get("custom_title") else ""
+                    threading.Thread(target=self._download_job,
+                                     args=(it["id"], it["url"], dict(self.opts, force=it["force"], name=name,
+                                                                     out=self._dest(it))),
+                                     daemon=True).start()
+            for it in self.items:
+                if self.active_conv >= max_conv:
+                    break
+                if it["status"] == WAIT_CONV and self.bench_ready:
+                    it["status"], it["progress"] = CONV, "0%"
+                    self._refresh(it)
+                    self.active_conv += 1
+                    o = dict(self.opts, encoder=enc_name(self.var_encoder.get()))
+                    threading.Thread(target=self._convert_job, args=(it["id"], it["file"], o),
+                                     daemon=True).start()
+        self._update_summary()
+        if self.active_dl == 0 and self.active_conv == 0 and (
+                self.stopping or not any(i["status"] in (WAIT, WAIT_CONV) for i in self.items)):
+            self._finish()
+
+    def _finish(self):
+        self.running = False
+        self.btn_start.configure(state="normal")
+        self.btn_update.configure(state="normal")
+        self.btn_stop.configure(state="disabled")
+        failed = sum(1 for i in self.items if i["status"] == FAIL)
+        self.var_status.set("หยุดแล้ว" if self.stopping else
+                            f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}")
+        self.save_queue()
+
+    def _update_summary(self):
+        if not self.running:
+            return
+        cnt = lambda st: sum(1 for i in self.items if i["status"] == st)
+        self.var_status.set(f"โหลด {cnt(DL)} | รอโหลด {cnt(WAIT)} | แปลง {cnt(CONV)} | รอแปลง {cnt(WAIT_CONV)}"
+                            f" | เสร็จแล้ว {self.done_count}")
+
+    def _download_job(self, item_id, url, opts):
+        force = opts.get("force", False)
+        post = lambda status, prog="": self.events.put(("item", item_id, status, prog, {}))
+        pathfile = os.path.join(TMP_DIR, f"{item_id}.txt")
+        try:
+            os.remove(pathfile)
+        except OSError:
+            pass
+
+        last = {"out": ""}
+
+        def attempt(target, extra=(), outtmpl=None, aria=True, exclude=None):
+            if opts.get("name"):  # ผู้ใช้ตั้งชื่อเอง
+                outtmpl = safe_filename(opts["name"]) + ".%(ext)s"
+            o = dict(opts, exclude=exclude) if exclude else opts
+            args = self.build_args(target, o, pathfile, extra, outtmpl, aria)
+            self.events.put(("log", f"[#{item_id}] > " + subprocess.list2cmdline(args[1:])))
+            out = []
+            st = {"t": time.time(), "bytes": None, "active": False, "stalled": False}
+
+            def on_line(line):
+                m = PROG_RE.match(line.strip())
+                if m:
+                    pct, spd, eta, got = m.groups()
+                    if got != st["bytes"]:
+                        st["bytes"], st["t"] = got, time.time()
+                    st["active"] = float(pct) < 100
+                    post(DL, f"{float(pct):.1f}%  {spd.strip()}  ETA {eta.strip()}")
+                    return
+                st["active"] = False  # ช่วงรวมไฟล์/แก้ไฟล์ไม่มี progress ไม่นับว่าค้าง
+                out.append(line)
+                self.events.put(("log", f"[#{item_id}] {line}"))
+                if "[Merger]" in line:
+                    post(DL, "กำลังรวมไฟล์ ...")
+                elif "aria2c" in line:
+                    post(DL, "aria2c ...")
+
+            def watchdog(done):
+                """ถ้าขนาดไฟล์ไม่เพิ่มเลย STALL_SEC วินาที ให้ฆ่า yt-dlp (แล้วค่อยรันใหม่ให้โหลดต่อจากเดิม)"""
+                while not done.wait(5):
+                    if st["active"] and time.time() - st["t"] > STALL_SEC and not self.stopping:
+                        st["stalled"] = True
+                        with self.procs_lock:
+                            p = self.procs.get(("dl", item_id))
+                        if p and p.poll() is None:
+                            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                                           capture_output=True, creationflags=NO_WINDOW)
+                        return
+
+            for n in range(STALL_RETRIES + 1):
+                st.update(t=time.time(), active=False, stalled=False)
+                done = threading.Event()
+                threading.Thread(target=watchdog, args=(done,), daemon=True).start()
+                try:
+                    rc = self._run_proc(args, on_line, key=("dl", item_id))
+                except OSError as e:
+                    self.events.put(("log", f"[#{item_id}] รันไม่ได้: {e}"))
+                    rc = -1
+                finally:
+                    done.set()
+                if not st["stalled"] or self.stopping or n == STALL_RETRIES:
+                    break
+                # yt-dlp จำชิ้นที่โหลดแล้วไว้ในไฟล์ .ytdl รันใหม่ด้วยคำสั่งเดิมจะโหลดต่อจากที่ค้าง
+                self.events.put(("log", f"[#{item_id}] ค้างไม่ขยับ {STALL_SEC} วินาที "
+                                        f"ตัดแล้วโหลดต่อจากเดิม (ครั้งที่ {n + 1}/{STALL_RETRIES})"))
+                post(DL, f"ค้าง โหลดต่อจากเดิม ({n + 1}/{STALL_RETRIES}) ...")
+            if st["stalled"] and rc != 0:
+                out.append("ERROR: stalled - ค้างหลายรอบ")
+            last["out"] = "\n".join(out[-50:])
+            return rc, last["out"]
+
+        def attempt_lower(target, extra=(), outtmpl=None, aria=True):
+            """โหลดแบบปกติ ถ้าโดน 403/404 ที่ตัวไฟล์ ให้ตัดไฟล์นั้นออกแล้วเอาตัวที่ชัดรองลงมา (บางเว็บบล็อกเฉพาะตัวชัดสุด)"""
+            rc, out = attempt(target, extra, outtmpl, aria)
+            failed = []
+            for _ in range(3):
+                if rc == 0 or self.stopping or not re.search(r"HTTP Error 40[34]|unable to download video data", out):
+                    break
+                ids = re.findall(r"Downloading \d+ format\(s\): (\S+)", out)
+                if not ids:
+                    break
+                failed.append(ids[-1].split("+")[0])
+                self.events.put(("log", f"[#{item_id}] ไฟล์ความชัดนี้ (format {failed[-1]}) โหลดไม่ได้ "
+                                        f"({fail_reason(out)}) ลองตัวที่ชัดรองลงมา"))
+                post(DL, "ลองความชัดรองลงมา ...")
+                rc, out = attempt(target, extra, outtmpl, aria, exclude=failed)
+            return rc, out
+
+        def via_page():
+            """เว็บที่ yt-dlp ไม่รู้จัก: อ่านหน้าเว็บเอง หาลิงก์วิดีโอจากทุก server
+            เลือก server ที่ชัดที่สุดก่อน ถ้าโหลดไม่ผ่านค่อยเปลี่ยน server ถัดไป"""
+            note = lambda m: (self.events.put(("notice", f"[#{item_id}] {m}")), post(DL, m.split(" ...")[0] + " ..."))
+            post(DL, "กำลังหาลิงก์วิดีโอในหน้าเว็บ ...")
+            page = fetch_page(url, notify=lambda m: note("กำลังผ่าน Cloudflare ..."))
+            title = opts.get("name") or page_title(page)
+            if title and not opts.get("name"):
+                self.events.put(("title", item_id, title))
+                f = "" if force else find_existing(opts["out"], title, url)
+                if f:
+                    self.events.put(("log", f"[#{item_id}] มีไฟล์อยู่แล้ว ไม่โหลดซ้ำ: {f}"))
+                    return "have:" + f
+            cands = []  # (ชื่อ, ลิงก์วิดีโอ, referer)
+            media = find_media(page) if not is_7mm(url) else ""  # 7mmtv มีคลิปตัวอย่างอื่นปนในหน้า
+            if media:
+                cands.append(("หน้าเว็บ", media, url))
+            if not cands:
+                servers = get_servers(url, page, notify=note)
+                if not servers and not self.stopping:
+                    self.events.put(("log", f"[#{item_id}] ยังไม่เจอ server ลองอ่านหน้าเว็บอีกรอบ"))
+                    servers = get_servers(url, fetch_page(url) or page, notify=note)
+                for name, embed in servers:
+                    if self.stopping:
+                        return -1
+                    post(DL, f"กำลังเช็ค server {name} ...")
+                    m, ref = resolve_embed(embed, url)
+                    if m:
+                        cands.append((name, m, ref))
+                    else:
+                        self.events.put(("log", f"[#{item_id}] server {name}: หาลิงก์วิดีโอไม่เจอ"))
+            if not cands:
+                self.events.put(("log", f"[#{item_id}] หาลิงก์วิดีโอในหน้าเว็บไม่เจอ"))
+                return NO_MEDIA
+            if len(cands) > 1:
+                scored = []
+                for name, m, ref in cands:
+                    post(DL, f"กำลังเช็คความชัด server {name} ...")
+                    q = probe_quality(m, ref, opts.get("res", 0))
+                    self.events.put(("log", f"[#{item_id}] server {name}: " +
+                                     (f"{q[0]}p {q[1]:.0f}k" if q else "ใช้ไม่ได้")))
+                    if q:
+                        scored.append((q, name, m, ref))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                cands = [(n, m, r) for _, n, m, r in scored] or cands
+            fname = safe_filename(title) if title else None
+            rc = -1
+            for name, m, ref in cands:
+                if self.stopping:
+                    break
+                self.events.put(("log", f"[#{item_id}] โหลดจาก server {name}: {m}"))
+                origin = re.match(r"https?://[^/]+", ref).group(0)
+                extra = ["--impersonate", "chrome", "--referer", ref, "--add-headers", f"Origin:{origin}"]
+                # aria2c ปลอมตัวเป็น Chrome ไม่ได้ เลยใช้ตัวโหลดของ yt-dlp แทน
+                rc = attempt_lower(m, extra, (fname + ".%(ext)s") if fname else None, aria=False)[0]
+                if rc == 0:
+                    break
+                self.events.put(("log", f"[#{item_id}] server {name} โหลดไม่ผ่าน ลอง server ถัดไป"))
+            return rc
+
+        if is_page_site(url):
+            rc = via_page()
+        else:
+            rc, out = attempt_lower(url)
+            if rc != 0 and not self.stopping:
+                if "Unsupported URL" in out:
+                    rc = via_page()
+                elif "impersonat" in out:
+                    self.events.put(("log", f"[#{item_id}] โดน Cloudflare ลองใหม่แบบปลอมตัวเป็น Chrome"))
+                    rc, out = attempt_lower(url, ["--impersonate", "chrome"], aria=False)
+                    if rc != 0 and not self.stopping:
+                        self.events.put(("log", f"[#{item_id}] yt-dlp อ่านเว็บนี้ไม่ได้ ลองอ่านหน้าเว็บเอง"))
+                        rc = via_page()
+        files = []
+        try:
+            with open(pathfile, encoding="utf-8") as f:
+                files = [l.strip() for l in f if l.strip()]
+            os.remove(pathfile)
+        except OSError:
+            pass
+        file = files[-1] if files else ""
+        if isinstance(rc, str) and rc.startswith("have:"):
+            self.events.put(("have", item_id, rc[5:]))
+            return
+        reason = "หาลิงก์วิดีโอไม่เจอ" if rc == NO_MEDIA else fail_reason(last["out"])
+        self.events.put(("dl_done", item_id, rc, file, reason))
+
+    def _convert_job(self, item_id, src, opts):
+        post = lambda prog: self.events.put(("item", item_id, CONV, prog, {}))
+        ext = opts["container"]
+        base = os.path.splitext(src)[0]
+        dst = base + "." + ext
+        tmp = base + ".h265-tmp." + ext
+        dur = [0.0]
+
+        def on_line(line):
+            m = DUR_RE.search(line)
+            if m and not dur[0]:
+                h, mi, se = m.groups()
+                dur[0] = int(h) * 3600 + int(mi) * 60 + float(se)
+            m = TIME_RE.search(line)
+            if m:
+                h, mi, se, spd = m.groups()
+                t = int(h) * 3600 + int(mi) * 60 + float(se)
+                pct = f"{min(t / dur[0] * 100, 100):.1f}%" if dur[0] else ""
+                post(f"{pct}  {spd}")
+            elif "error" in line.lower() or "invalid" in line.lower():
+                self.events.put(("log", f"[#{item_id}] {line}"))
+
+        def run(enc_name):
+            pre, vargs = encode_args(enc_name, opts["crf"], opts["preset"])
+            args = [FFMPEG, "-hide_banner", "-y", *pre, "-i", src, "-map", "0:v:0", "-map", "0:a?",
+                    *vargs, "-c:a", "aac", "-b:a", "128k"]
+            if ext == "mp4":
+                args += ["-tag:v", "hvc1", "-movflags", "+faststart"]
+            args.append(tmp)
+            self.events.put(("log", f"[#{item_id}] > ffmpeg " + subprocess.list2cmdline(args[1:])))
+            try:
+                return self._run_proc(args, on_line, key=("conv", item_id))
+            except OSError as e:
+                self.events.put(("log", f"[#{item_id}] รัน ffmpeg ไม่ได้: {e}"))
+                return -1
+
+        rc = run(opts["encoder"])
+        if rc != 0 and opts["encoder"] != CPU_ENC and not self.stopping and item_id not in self.cancelled:
+            self.events.put(("log", f"[#{item_id}] แปลงด้วย {opts['encoder']} ไม่ผ่าน ลองใหม่ด้วย CPU"))
+            rc = run(CPU_ENC)
+        if rc == 0 and os.path.isfile(tmp) and item_id not in self.cancelled:
+            try:
+                os.remove(src)
+                os.replace(tmp, dst)
+                self.events.put(("log", f"[#{item_id}] แปลงเสร็จ: {dst}"))
+            except OSError as e:
+                self.events.put(("log", f"[#{item_id}] เปลี่ยนชื่อไฟล์ไม่ได้: {e}"))
+                rc = 1
+        else:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        self.events.put(("conv_done", item_id, rc, dst))
+
+    def stop(self):
+        if not self.running:
+            return
+        self.stopping = True
+        with self.procs_lock:
+            procs = list(self.procs.values())
+        for p in procs:
+            if p.poll() is None:
+                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               creationflags=NO_WINDOW, capture_output=True)
+        self.var_status.set("กำลังหยุด ...")
+        self._schedule()
+
+    # ---------- events from threads ----------
+    def _pump(self):
+        changed = False
+        try:
+            while True:
+                ev = self.events.get_nowait()
+                kind = ev[0]
+                if kind == "log":
+                    self.write_log(ev[1])
+                elif kind == "title":
+                    it = self._find(ev[1])
+                    if it:
+                        if ev[2] and not it.get("custom_title"):
+                            it["title"] = ev[2]
+                        if it["status"] == WAIT:
+                            it["progress"] = "" if ev[2] else "ดึงชื่อไม่ได้"
+                        self._refresh(it)
+                        if not self._check_title_dup(it):
+                            self._check_existing(it)
+                        self.save_queue()
+                elif kind == "item":
+                    _, item_id, status, prog, kw = ev
+                    it = self._find(item_id)
+                    if it and it["status"] == status:
+                        it["progress"] = prog
+                        self._refresh(it)
+                elif kind == "dl_done":
+                    _, item_id, rc, file, reason = ev
+                    self.active_dl -= 1
+                    it = self._find(item_id)
+                    if it:
+                        if file:
+                            it["file"] = file
+                            if not it["title"]:
+                                it["title"] = os.path.basename(file)
+                        if self.stopping:
+                            it["status"], it["progress"] = STOPPED, ""
+                        elif rc != 0:
+                            it["status"], it["progress"] = FAIL, f"โหลดไม่ได้: {reason}" if reason else f"โหลดไม่ได้ (exit {rc})"
+                        elif not it["convert"]:
+                            it["status"], it["progress"] = DONE, "100%"
+                        elif file and os.path.isfile(file):
+                            it["status"], it["progress"] = WAIT_CONV, "โหลดเสร็จ รอแปลง"
+                        else:
+                            it["status"], it["progress"] = FAIL, "หาไฟล์ที่โหลดไม่เจอ"
+                        self._refresh(it)
+                    changed = True
+                elif kind == "expanded":
+                    _, src, links, folder = ev
+                    if links:
+                        added = 0
+                        for u in links:
+                            if self._add_item(u, save=False, subdir=folder):
+                                added += 1
+                        self.write_log(f"คลิปจากหน้านี้จะโหลดลงโฟลเดอร์ย่อย: {folder}")
+                        self.save_queue()
+                        msg = (f"แกะได้ {len(links)} ลิงก์ เพิ่มเข้าคิว {added}"
+                               + (f" (ซ้ำ {len(links) - added})" if len(links) - added else ""))
+                    else:
+                        msg = "แกะลิงก์จากหน้านี้ไม่ได้ (ไม่เจอลิงก์คลิป) ลองวางลิงก์ของคลิปแต่ละอันแทน"
+                    self.write_log(f"{msg}: {src}")
+                    self.var_status.set(msg)
+                elif kind == "have":
+                    _, item_id, f = ev
+                    self.active_dl -= 1
+                    it = self._find(item_id)
+                    if it:
+                        it["status"], it["progress"], it["file"] = HAVE, os.path.basename(f), f
+                        self._refresh(it)
+                    changed = True
+                elif kind == "conv_done":
+                    _, item_id, rc, dst = ev
+                    self.active_conv -= 1
+                    it = self._find(item_id)
+                    if it:
+                        self.cancelled.discard(item_id)
+                        if it["cancel_conv"]:
+                            it["cancel_conv"] = False
+                            it["status"], it["progress"] = DONE, "โหลดแล้ว (ยกเลิกแปลง)"
+                        elif self.stopping:
+                            it["status"], it["progress"] = STOPPED, "ยังไม่ได้แปลง"
+                        elif rc == 0:
+                            it["status"], it["progress"], it["file"] = DONE, "100% (H.265)", dst
+                            it["converted"] = True
+                        else:
+                            it["status"], it["progress"] = FAIL, f"แปลงไม่ได้ (exit {rc})"
+                        self._refresh(it)
+                    changed = True
+                elif kind == "notice":
+                    self.write_log(ev[1])
+                    self.var_status.set(ev[1])
+                elif kind == "encoders":
+                    res = ev[1]
+                    labels = [enc_label(n, f) for n, f in res]
+                    best = pick_best(res)
+                    self.cmb_encoder.configure(values=labels)
+                    self.var_encoder.set(next(l for l in labels if enc_name(l) == best))
+                    self.bench_ready = True
+                    self._schedule()
+                    self.write_log("ทดสอบตัวแปลง (1080p): " + " | ".join(labels) + f"  => เลือก {best}")
+                elif kind == "update_done":
+                    self.busy_updating = False
+                    self.btn_start.configure(state="normal")
+                    self.btn_update.configure(state="normal")
+                    self.var_status.set("อัปเดตเสร็จ พร้อมโหลด" if ev[1] == 0 else "เช็คอัปเดตไม่สำเร็จ (ดู Log)")
+        except queue.Empty:
+            pass
+        if changed:
+            self.save_queue()
+            self._schedule()
+        self._auto_clear()
+        self.after(100, self._pump)
+
+    def _auto_clear(self):
+        """ล้างแถวที่เสร็จ/มีแล้วออกจากคิวเอง หลังโชว์ผลไว้ AUTO_CLEAR_SEC วินาที (บันทึกลง Log ไว้ดูย้อนหลัง)"""
+        now = time.time()
+        gone = []
+        for it in self.items:
+            if it["status"] in (DONE, HAVE):
+                if "done_at" not in it:
+                    it["done_at"] = now
+                    self.done_count += 1
+                    name = os.path.basename(it["file"]) if it["file"] else it["title"] or it["url"]
+                    self.write_log(("✔ เสร็จ: " if it["status"] == DONE else "✔ มีแล้ว: ") + name)
+                elif self.var_auto_clear.get() and now - it["done_at"] >= AUTO_CLEAR_SEC:
+                    gone.append(it)
+            else:
+                it.pop("done_at", None)
+        if gone:
+            for it in gone:
+                self.tree.delete(it["iid"])
+                self.items.remove(it)
+            self._renumber()
+            self._update_summary()
+
+    def on_close(self):
+        if self.running and not messagebox.askyesno(APP_NAME, "กำลังโหลด/แปลงอยู่ จะปิดและหยุดเลยไหม?"):
+            return
+        self.stop()
+        self.save_settings()
+        self.save_queue()
+        self.destroy()
+
+
+if __name__ == "__main__":
+    App().mainloop()
