@@ -14,7 +14,7 @@ function badge(tabId, ok) {
   const opt = tabId ? { tabId } : {};
   chrome.action.setBadgeBackgroundColor({ color: ok ? "#219E54" : "#D93025", ...opt }).catch(ignore);
   chrome.action.setBadgeText({ text: ok ? "✓" : "!", ...opt }).catch(ignore);
-  setTimeout(() => chrome.action.setBadgeText({ text: "", ...opt }).catch(ignore), 3000);
+  setTimeout(() => chrome.action.setBadgeText({ text: "", ...opt }).catch(ignore), 1000);
 }
 
 function notify(message) {

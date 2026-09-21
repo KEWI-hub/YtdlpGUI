@@ -51,7 +51,7 @@ The `chrome-extension\` folder is a small Chrome extension that sends links stra
 **Use** (YtdlpGUI must be open, even minimized to the tray):
 - Click the extension icon, or press **Alt+Shift+D**, to download the page you are on.
 - Right-click any link → **Download link with YtdlpGUI**.
-- A green ✓ badge means the link reached the app and the download starts automatically. A red ! means the app is not running.
+- A green ✓ badge (shown for 1 second) means the link reached the app and the download starts automatically. A red ! means the app is not running.
 
 It only talks to `127.0.0.1:47777` on your own computer. The app accepts links only from the extension (requests must carry the `X-YtdlpGUI` header), so web pages cannot add downloads.
 
@@ -669,6 +669,10 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 ## ประวัติการเปลี่ยนแปลง
 
 เรียงจากใหม่ไปเก่า
+
+### Chrome Extension v1.0.4 (2026-09-21)
+
+- เครื่องหมาย ✓ / ! บนไอคอนหายไปหลัง 1 วินาที (เดิม 3 วินาที)
 
 ### Chrome Extension v1.0.3 (2026-09-21)
 
