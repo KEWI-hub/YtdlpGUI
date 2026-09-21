@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -1005,6 +1005,15 @@ def start_extension_server(on_urls):
     return srv
 
 
+def fresh_env():
+    """environment สำหรับเปิดแอปตัวใหม่: ตัดตัวแปรของ PyInstaller ทิ้ง
+    ไม่งั้นแอปตัวใหม่จะไปหาโฟลเดอร์ _MEIxxxx ของแอปตัวเก่า (ที่ถูกลบไปแล้ว) แล้วเปิดไม่ขึ้น
+    ("Failed to load Python DLL")"""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI") and k not in ("_MEIPASS", "_MEIPASS2")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def to_int(var, default, lo, hi):
     try:
         return max(lo, min(hi, int(var.get())))
@@ -1265,7 +1274,7 @@ class App(tk.Tk):
         self.save_settings()
         self.save_queue()
         args = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(__file__)]
-        subprocess.Popen(args, cwd=APP_DIR)
+        subprocess.Popen(args, cwd=APP_DIR, env=fresh_env())
         self.destroy()
 
     def write_log(self, text):
@@ -1733,6 +1742,7 @@ class App(tk.Tk):
             # และวนย้ายไฟล์ซ้ำจนสำเร็จ (ไฟล์ exe ยังถูกล็อกอยู่ครู่หนึ่งหลังแอปปิด)
             name = os.path.basename(exe)
             f.write("@echo off\r\n"
+                    "set PYINSTALLER_RESET_ENVIRONMENT=1\r\n"
                     'set "SYS=%SystemRoot%\\System32"\r\n'
                     "set n=0\r\n"
                     ":wait\r\n"
@@ -1748,7 +1758,7 @@ class App(tk.Tk):
                     'del "%~f0"\r\n')
         self.save_settings()
         self.save_queue()
-        subprocess.Popen(["cmd", "/c", script], creationflags=NO_WINDOW, cwd=APP_DIR)
+        subprocess.Popen(["cmd", "/c", script], creationflags=NO_WINDOW, cwd=APP_DIR, env=fresh_env())
         self.destroy()
 
     def run_update(self):
