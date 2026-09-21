@@ -7,14 +7,18 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({ id: "page", title: "Download this page with YtdlpGUI", contexts: ["page", "video", "frame"] });
 });
 
+// แท็บอาจถูกปิด/เปลี่ยนไปแล้วตอนตั้งหรือล้าง badge (No tab with id) ไม่ต้องสน
+const ignore = () => {};
+
 function badge(tabId, ok) {
-  chrome.action.setBadgeBackgroundColor({ color: ok ? "#219E54" : "#D93025", tabId });
-  chrome.action.setBadgeText({ text: ok ? "✓" : "!", tabId });
-  setTimeout(() => chrome.action.setBadgeText({ text: "", tabId }), 3000);
+  const opt = tabId ? { tabId } : {};
+  chrome.action.setBadgeBackgroundColor({ color: ok ? "#219E54" : "#D93025", ...opt }).catch(ignore);
+  chrome.action.setBadgeText({ text: ok ? "✓" : "!", ...opt }).catch(ignore);
+  setTimeout(() => chrome.action.setBadgeText({ text: "", ...opt }).catch(ignore), 3000);
 }
 
 function notify(message) {
-  chrome.notifications.create({ type: "basic", iconUrl: "icons/icon128.png", title: "YtdlpGUI", message });
+  chrome.notifications.create({ type: "basic", iconUrl: "icons/icon128.png", title: "YtdlpGUI", message }).catch(ignore);
 }
 
 async function send(urls, tabId) {

@@ -670,6 +670,10 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 
 เรียงจากใหม่ไปเก่า
 
+### Chrome Extension v1.0.3 (2026-09-21)
+
+- แก้ error `No tab with id` ในหน้า Errors ของ extension: ถ้าปิดหรือเปลี่ยนแท็บภายใน 3 วินาทีหลังกดส่ง การล้างเครื่องหมาย ✓ จะฟ้อง error (ลิงก์ส่งเข้าแอปครบตามปกติ) ตอนนี้ข้ามไปเงียบๆ
+
 ### Chrome Extension v1.0.2 (2026-09-21)
 
 - แก้ปุ่ม extension ขึ้นสีแดงทุกครั้ง: ขาดสิทธิ์ `activeTab` Chrome เลยไม่บอก URL ของแท็บ extension ไม่ได้ส่งอะไรเข้าแอปเลย ใครใช้ v1.0.1 ให้กด Reload ที่ `chrome://extensions`
