@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -1078,6 +1078,10 @@ class App(tk.Tk):
         self.cancelled = set()  # id ของคลิปที่ผู้ใช้เอาติ๊กแปลงออกระหว่างแปลง
 
         os.makedirs(TMP_DIR, exist_ok=True)
+        try:  # ล้างประวัติคลิปที่โหลดแล้วทุกครั้งที่เปิดแอป (กันซ้ำแค่ในรอบนี้ ข้ามรอบใช้เช็คไฟล์ในโฟลเดอร์แทน)
+            os.remove(ARCHIVE_FILE)
+        except OSError:
+            pass
         self._build_ui()
         self._build_menubar()
         self._translate_widgets(self)
