@@ -35,7 +35,9 @@ async function send(urls, tabId) {
     badge(tabId, true);
   } catch (e) {
     badge(tabId, false);
-    notify("YtdlpGUI is not running. Open YtdlpGUI.exe first, then try again. / เปิดแอป YtdlpGUI ก่อน แล้วลองใหม่");
+    console.error("YtdlpGUI:", e);
+    notify(`Could not send to YtdlpGUI (${e.message || e}). Make sure YtdlpGUI v1.2.5+ is open. / ` +
+           "ส่งเข้าแอปไม่ได้ เช็คว่าเปิดแอป YtdlpGUI เวอร์ชัน 1.2.5 ขึ้นไปอยู่");
   }
 }
 

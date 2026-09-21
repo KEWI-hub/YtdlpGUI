@@ -40,7 +40,9 @@ All of these are listed in `.gitignore`, so they are never committed by accident
 
 The `chrome-extension\` folder is a small Chrome extension that sends links straight to the app.
 
-**Install (once):**
+**Install (once).** After updating the app, press **Reload** on the extension card in `chrome://extensions` too.
+
+**Install steps:**
 1. Open `chrome://extensions` in Chrome.
 2. Turn on **Developer mode** (top-right).
 3. Click **Load unpacked** and select the `chrome-extension` folder of this project.
@@ -219,7 +221,9 @@ The full guide below is in Thai, including every setting, how each feature works
 
 โฟลเดอร์ `chrome-extension\` เป็น extension เล็กๆ ของ Chrome ใช้ส่งลิงก์เข้าแอปตรงๆ ไม่ต้อง copy มาวาง
 
-**ติดตั้ง (ครั้งเดียว):**
+**ติดตั้ง (ครั้งเดียว)** ถ้าอัปเดตแอปแล้ว extension มีเวอร์ชันใหม่ ให้กด **Reload** (ลูกศรวน) ที่การ์ดของ extension ใน `chrome://extensions` ด้วย
+
+**ขั้นตอนติดตั้ง:**
 1. เปิด `chrome://extensions` ใน Chrome
 2. เปิด **Developer mode** (มุมขวาบน)
 3. กด **Load unpacked** แล้วเลือกโฟลเดอร์ `chrome-extension` ในโปรเจกต์นี้
@@ -665,6 +669,12 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 ## ประวัติการเปลี่ยนแปลง
 
 เรียงจากใหม่ไปเก่า
+
+### v1.2.5 (2026-09-21) — แก้ Chrome Extension ขึ้นสีแดง
+
+- Chrome เวอร์ชันใหม่ถามก่อน (preflight / Local Network Access) ทุกครั้งที่ extension จะยิงเข้า `127.0.0.1` แอปเดิมตอบปฏิเสธ เลยส่งลิงก์ไม่ได้ ตอนนี้ตอบอนุญาตเฉพาะ origin ของ extension (หน้าเว็บทั่วไปยังโดน 403 เหมือนเดิม)
+- Extension v1.0.1: แจ้งเตือนบอกสาเหตุจริงเวลาส่งไม่ได้ (ต้องกด Reload ที่ `chrome://extensions` 1 ครั้ง)
+- ถ้าเช็คอัปเดตกับ GitHub เกินโควต้า (60 ครั้ง/ชม. ต่อ IP) จะลองใหม่ด้วยบัญชี GitHub ที่ git จำไว้ในเครื่อง
 
 ### v1.2.4 (2026-09-21) — ล้างประวัติการโหลดทุกครั้งที่เปิดแอป
 

@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.5"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -719,12 +719,25 @@ def github_token(owner_only=False):
     return ""
 
 
+_rate_token = {"t": None}
+
+
 def github_get(url, token="", accept="application/vnd.github+json", timeout=30):
     headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": accept}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
-        return r.read()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        # ไม่ได้ล็อกอิน GitHub จำกัด 60 ครั้ง/ชม. ต่อ IP ถ้าหมด ลองใหม่ด้วยบัญชีที่ git จำไว้ในเครื่อง (ถ้ามี)
+        if token or e.code not in (403, 429) or "api.github.com" not in url:
+            raise
+        if _rate_token["t"] is None:
+            _rate_token["t"] = github_token()
+        if not _rate_token["t"]:
+            raise
+        return github_get(url, _rate_token["t"], accept, timeout)
 
 
 def latest_release():
@@ -980,16 +993,34 @@ def start_extension_server(on_urls):
             return self.headers.get(EXT_HEADER) == "1" and (
                 not origin or origin.startswith(("chrome-extension://", "moz-extension://", "extension://")))
 
+        def _ext_origin(self):
+            origin = self.headers.get("Origin", "")
+            return origin if origin.startswith(("chrome-extension://", "moz-extension://", "extension://")) else ""
+
+        def _cors(self):
+            # อนุญาตเฉพาะ origin ของ extension (Chrome ใหม่ๆ ถามก่อนยิงเข้า 127.0.0.1 / Local Network Access)
+            origin = self._ext_origin()
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", f"Content-Type, {EXT_HEADER}")
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+                self.send_header("Vary", "Origin")
+
         def _reply(self, code, obj):
             body = json.dumps(obj).encode()
             self.send_response(code)
+            self._cors()
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
-        def do_OPTIONS(self):  # ไม่ตอบ CORS = หน้าเว็บทั่วไปยิงเข้ามาไม่ได้
-            self.send_response(403)
+        def do_OPTIONS(self):
+            # preflight: ตอบอนุญาตเฉพาะ extension / หน้าเว็บทั่วไปได้ 403 เลยยิงเข้ามาไม่ได้
+            self.send_response(204 if self._ext_origin() else 403)
+            self._cors()
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
         def do_GET(self):
