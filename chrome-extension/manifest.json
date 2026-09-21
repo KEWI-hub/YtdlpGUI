@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "YtdlpGUI Downloader",
+  "version": "1.0.0",
+  "description": "Send the current page or a link to YtdlpGUI and start downloading right away.",
+  "permissions": ["contextMenus", "notifications"],
+  "host_permissions": ["http://127.0.0.1:47777/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "Download this page with YtdlpGUI (Alt+Shift+D)",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "commands": {
+    "_execute_action": { "suggested_key": { "default": "Alt+Shift+D" }, "description": "Download this page with YtdlpGUI" }
+  }
+}

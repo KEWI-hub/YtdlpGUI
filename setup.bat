@@ -155,7 +155,7 @@ if errorlevel 2 (
 echo [build] ติดตั้ง library / installing libraries ...
 py -3 -m pip install -r requirements.txt || goto :build_fail
 echo [build] กำลัง build YtdlpGUI.exe ~1 นาที / building, about 1 minute ...
-py -3 -m PyInstaller --noconfirm --onefile --windowed --collect-all curl_cffi --hidden-import websocket --name YtdlpGUI --distpath . --workpath build --specpath build ytdlp_gui.py || goto :build_fail
+py -3 -m PyInstaller --noconfirm --onefile --windowed --collect-all curl_cffi --hidden-import websocket --hidden-import pystray._win32 --hidden-import PIL._tkinter_finder --name YtdlpGUI --distpath . --workpath build --specpath build ytdlp_gui.py || goto :build_fail
 rmdir /s /q build 2>nul
 set "NOAPP=0"
 echo [เสร็จ / done] YtdlpGUI.exe

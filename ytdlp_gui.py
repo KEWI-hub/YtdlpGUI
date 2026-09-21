@@ -18,9 +18,12 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from i18n import LANGS, set_lang, tr
+
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.1.0"  # ต้องตรงกับ tag บน GitHub (v1.1.0) ตอนออก Release
+APP_VERSION = "1.2.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
+LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 BIN_DIR = os.path.join(APP_DIR, "bin")
 TMP_DIR = os.path.join(APP_DIR, "_tmp")
@@ -68,6 +71,7 @@ DEFAULTS = {
     "frags": 16,
     "auto_clear": True,
     "max_pages": 5,
+    "lang": "en",
     "resolution": "สูงสุด",
 }
 
@@ -686,11 +690,11 @@ def parse_version(v):
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) or (0,)
 
 
-def github_token():
+def github_token(owner_only=False):
     """ยืม token ที่ git จำไว้ (Git Credential Manager) ใช้เฉพาะตอน repo เป็น private ไม่เด้งหน้าต่างถามรหัส"""
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
     # ลองระบุชื่อเจ้าของ repo ก่อน (เครื่องที่จำไว้หลายบัญชีจะถามว่าใช้บัญชีไหน ถ้าไม่ระบุ)
-    for user in (GITHUB_REPO.split("/")[0], ""):
+    for user in (GITHUB_REPO.split("/")[0],) + (() if owner_only else ("",)):
         q = "protocol=https\nhost=github.com\n" + (f"username={user}\n" if user else "") + "\n"
         try:
             r = subprocess.run(["git", "credential", "fill"], input=q, capture_output=True, text=True,
@@ -743,6 +747,264 @@ def download_update(asset_url, token, dest):
         f.write(blob)
 
 
+# ---------- อัปเดตเครื่องมือใน bin\ ทุกครั้งที่เปิดแอป ----------
+TOOLS = {
+    # ชื่อ: (repo บน GitHub, ชื่อไฟล์ asset (regex), ไฟล์ที่ต้องดึงออกจาก zip, คำสั่งดูเวอร์ชัน, regex เวอร์ชัน)
+    "yt-dlp": ("yt-dlp/yt-dlp", r"^yt-dlp\.exe$", None, ["--version"], r"(\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)"),
+    "ffmpeg": ("yt-dlp/FFmpeg-Builds", r"^ffmpeg-master-latest-win64-gpl\.zip$", ("ffmpeg.exe", "ffprobe.exe"),
+               ["-hide_banner", "-version"], r"(\d{4})-?(\d{2})-?(\d{2})"),
+    "deno": ("denoland/deno", r"^deno-x86_64-pc-windows-msvc\.zip$", ("deno.exe",), ["--version"], r"deno (\d+\.\d+\.\d+)"),
+    "aria2c": ("aria2/aria2", r"win-64bit.*\.zip$", ("aria2c.exe",), ["--version"], r"aria2 version (\d+\.\d+\.\d+)"),
+}
+
+
+def local_tool_version(name):
+    exe = os.path.join(BIN_DIR, f"{name}.exe")
+    if not os.path.isfile(exe):
+        return None
+    try:
+        out = subprocess.run([exe, *TOOLS[name][3]], capture_output=True, text=True, errors="replace",
+                             creationflags=NO_WINDOW, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    m = re.search(TOOLS[name][4], out)
+    if not m:
+        return ""
+    return "-".join(m.groups()) if name == "ffmpeg" else m.group(1)
+
+
+def remote_tool(name):
+    """คืน (เวอร์ชันล่าสุด, ลิงก์ asset) จาก GitHub Releases"""
+    repo, pattern = TOOLS[name][0], TOOLS[name][1]
+    url = f"https://api.github.com/repos/{repo}/releases/" + ("tags/latest" if name == "ffmpeg" else "latest")
+    data = json.loads(github_get(url))
+    asset = next((a for a in data.get("assets", []) if re.search(pattern, a["name"])), None)
+    if not asset:
+        return None, None
+    if name == "ffmpeg":  # build รายวัน ใช้วันที่ของไฟล์เป็นเวอร์ชัน
+        ver = asset["updated_at"][:10]
+    else:
+        ver = re.sub(r"^[^\d]*", "", data.get("tag_name", ""))
+    return ver, asset["browser_download_url"]
+
+
+def tool_is_newer(name, remote, local):
+    if not local:
+        return True
+    if name == "ffmpeg":
+        return remote.replace("-", "") > local.replace("-", "")
+    return parse_version(remote) > parse_version(local)
+
+
+def download_file(url, dest, progress=None):
+    req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        got = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            got += len(chunk)
+            if progress and total:
+                progress(got * 100 // total)
+
+
+def update_tool(name, url, progress=None):
+    """โหลดเครื่องมือตัวใหม่มาไว้ใน _tmp ก่อน แล้วค่อยสลับเข้า bin\\ (ถ้าโหลดพังกลางทาง ตัวเดิมยังอยู่)"""
+    os.makedirs(TMP_DIR, exist_ok=True)
+    os.makedirs(BIN_DIR, exist_ok=True)
+    tmp = os.path.join(TMP_DIR, os.path.basename(urlparse(url).path))
+    download_file(url, tmp, progress)
+    members = TOOLS[name][2]
+    try:
+        if not members:  # ไฟล์ exe ตรงๆ (yt-dlp)
+            os.replace(tmp, os.path.join(BIN_DIR, f"{name}.exe"))
+            return
+        import zipfile
+        with zipfile.ZipFile(tmp) as z:
+            for want in members:
+                src = next((n for n in z.namelist() if n.replace("\\", "/").split("/")[-1].lower() == want), None)
+                if not src:
+                    raise ValueError(f"ไม่เจอ {want} ในไฟล์ zip")
+                part = os.path.join(TMP_DIR, want + ".new")
+                with z.open(src) as a, open(part, "wb") as b:
+                    b.write(a.read())
+                os.replace(part, os.path.join(BIN_DIR, want))
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+# ---------- ไอคอนสถานะ (System Tray + ไอคอนหน้าต่าง) ----------
+TRAY_COLORS = {"wait": (242, 181, 12), "busy": (37, 116, 235), "done": (33, 158, 84), "idle": (120, 128, 140)}
+
+
+def make_status_icon(color, size=64):
+    """วงกลมสี + ลูกศรลงสีขาว"""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse((2, 2, size - 3, size - 3), fill=color + (255,))
+    c, w = size / 2, size * 0.11
+    d.rectangle((c - w, size * 0.2, c + w, size * 0.55), fill="white")
+    d.polygon([(size * 0.26, size * 0.5), (size * 0.74, size * 0.5), (c, size * 0.8)], fill="white")
+    return img
+
+
+class TrVar(tk.StringVar):
+    """StringVar ที่แปลภาษาให้ทุกครั้งที่ set"""
+
+    def set(self, value):
+        super().set(tr(value))
+
+
+def from_display(value, keys):
+    """ค่าที่โชว์ใน dropdown (แปลแล้ว) -> key เดิมที่โค้ดใช้"""
+    return next((k for k in keys if value in (k, tr(k))), value)
+
+
+# ---------- Error log: เขียนลงไฟล์เฉพาะตอนมี error แล้ว push ขึ้น repo private ----------
+LOG_DIR = os.path.join(APP_DIR, "logs")
+_log_lock = threading.Lock()
+
+
+def _sanitize(text):
+    """ซ่อนชื่อผู้ใช้ Windows ใน path"""
+    home = os.path.expanduser("~")
+    return text.replace(home, "~").replace(home.replace("\\", "/"), "~") if home else text
+
+
+def log_error(kind, message, detail="", url=""):
+    """เขียน error 1 รายการลง logs/errors-YYYY-MM-DD.log (ไม่เขียนอย่างอื่นลงไฟล์)"""
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    block = [f"===== {stamp} | v{APP_VERSION} | {kind}", f"message: {message}"]
+    if url:
+        block.append(f"url: {url}")
+    if detail:
+        block.append("detail:\n" + "\n".join("    " + l for l in detail.strip().splitlines()[-60:]))
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with _log_lock, open(os.path.join(LOG_DIR, f"errors-{time.strftime('%Y-%m-%d')}.log"), "a",
+                             encoding="utf-8") as f:
+            f.write(_sanitize("\n".join(block)) + "\n\n")
+    except OSError:
+        pass
+
+
+def upload_error_logs():
+    """push ไฟล์ error log ที่มีการเปลี่ยนแปลงขึ้น LOGS_REPO (ใช้บัญชีเจ้าของเท่านั้น เครื่องอื่นจะข้ามไปเฉยๆ)
+    คืนจำนวนไฟล์ที่อัปโหลด หรือ None ถ้าไม่มีสิทธิ์/ไม่ได้อัป"""
+    import base64
+    import hashlib
+    try:
+        files = sorted(f for f in os.listdir(LOG_DIR) if f.startswith("errors-") and f.endswith(".log"))
+    except OSError:
+        return 0
+    state_file = os.path.join(LOG_DIR, ".uploaded.json")
+    state = load_json(state_file, {})
+    todo = []
+    for f in files:
+        data = open(os.path.join(LOG_DIR, f), "rb").read()
+        h = hashlib.sha1(data).hexdigest()
+        if state.get(f) != h:
+            todo.append((f, data, h))
+    if not todo:
+        return 0
+    token = github_token(owner_only=True)
+    if not token:
+        return None
+    machine = re.sub(r"[^\w.-]", "_", os.environ.get("COMPUTERNAME", "pc"))
+    done = 0
+    for f, data, h in todo:
+        api = f"https://api.github.com/repos/{LOGS_REPO}/contents/logs/{machine}/{f}"
+        headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": "application/vnd.github+json",
+                   "Authorization": f"Bearer {token}"}
+        sha = None
+        try:
+            with urllib.request.urlopen(urllib.request.Request(api, headers=headers), timeout=20) as r:
+                sha = json.loads(r.read()).get("sha")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return None if e.code in (401, 403) else done
+        except Exception:
+            return done
+        body = {"message": f"error log {machine} {f}", "content": base64.b64encode(data).decode()}
+        if sha:
+            body["sha"] = sha
+        try:
+            req = urllib.request.Request(api, data=json.dumps(body).encode(), headers=headers, method="PUT")
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+        except urllib.error.HTTPError as e:
+            return None if e.code in (401, 403, 404) else done
+        except Exception:
+            return done
+        state[f] = h
+        done += 1
+    save_json(state_file, state)
+    return done
+
+
+# ---------- รับลิงก์จาก Chrome Extension (เฉพาะในเครื่องนี้) ----------
+EXT_PORT = 47777
+EXT_HEADER = "X-YtdlpGUI"
+
+
+def start_extension_server(on_urls):
+    """เปิด HTTP server ที่ 127.0.0.1:EXT_PORT ให้ Chrome Extension ส่งลิงก์มา
+    รับเฉพาะคำขอที่มี header X-YtdlpGUI และมาจาก extension (เว็บทั่วไปส่งมาไม่ได้)"""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):  # ไม่ต้องพิมพ์ log ของ server
+            pass
+
+        def _allowed(self):
+            origin = self.headers.get("Origin", "")
+            return self.headers.get(EXT_HEADER) == "1" and (
+                not origin or origin.startswith(("chrome-extension://", "moz-extension://", "extension://")))
+
+        def _reply(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_OPTIONS(self):  # ไม่ตอบ CORS = หน้าเว็บทั่วไปยิงเข้ามาไม่ได้
+            self.send_response(403)
+            self.end_headers()
+
+        def do_GET(self):
+            if self.path.startswith("/ping") and self._allowed():
+                self._reply(200, {"app": APP_NAME, "version": APP_VERSION})
+            else:
+                self._reply(403, {"ok": False})
+
+        def do_POST(self):
+            if not self.path.startswith("/add") or not self._allowed():
+                return self._reply(403, {"ok": False})
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(min(n, 1 << 20)) or b"{}")
+                urls = [u for u in data.get("urls", []) if isinstance(u, str) and u.startswith(("http://", "https://"))]
+            except (ValueError, AttributeError):
+                return self._reply(400, {"ok": False})
+            if not urls:
+                return self._reply(400, {"ok": False, "error": "no http(s) url"})
+            on_urls(urls[:500], bool(data.get("start", True)))
+            self._reply(200, {"ok": True, "received": len(urls)})
+
+    srv = ThreadingHTTPServer(("127.0.0.1", EXT_PORT), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 def to_int(var, default, lo, hi):
     try:
         return max(lo, min(hi, int(var.get())))
@@ -759,14 +1021,16 @@ class App(tk.Tk):
         self.minsize(820, 540)
 
         s = {**DEFAULTS, **load_json(SETTINGS_FILE, {})}
+        set_lang(s["lang"])
+        self.lang = s["lang"] if s["lang"] in LANGS else "en"
         self.var_out = tk.StringVar(value=s["out_dir"])
-        self.var_format = tk.StringVar(value=s["format"] if s["format"] in FORMATS else DEFAULTS["format"])
-        self.var_res = tk.StringVar(value=s["resolution"] if s["resolution"] in RESOLUTIONS else "สูงสุด")
+        self.var_format = tk.StringVar(value=tr(s["format"] if s["format"] in FORMATS else DEFAULTS["format"]))
+        self.var_res = tk.StringVar(value=tr(s["resolution"] if s["resolution"] in RESOLUTIONS else "สูงสุด"))
         self.var_crf = tk.IntVar(value=s["crf"])
         self.var_preset = tk.StringVar(value=s["preset"])
         self.var_container = tk.StringVar(value=s["container"] if s["container"] in CONTAINERS else "mp4")
         self.var_aria = tk.BooleanVar(value=s["aria2c"])
-        self.var_cookies = tk.StringVar(value=s["cookies"])
+        self.var_cookies = tk.StringVar(value=tr(s["cookies"]))
         self.var_update = tk.BooleanVar(value=s["update_on_start"])
         self.var_auto_clear = tk.BooleanVar(value=s["auto_clear"])
         self.var_max_pages = tk.IntVar(value=s["max_pages"])
@@ -774,9 +1038,9 @@ class App(tk.Tk):
         self.var_max_dl = tk.IntVar(value=s["max_dl"])
         self.var_max_conv = tk.IntVar(value=s["max_conv"])
         self.var_frags = tk.IntVar(value=s["frags"])
-        self.var_encoder = tk.StringVar(value="กำลังทดสอบ ...")
+        self.var_encoder = tk.StringVar(value=tr("กำลังทดสอบ ..."))
         self.var_url = tk.StringVar()
-        self.var_status = tk.StringVar(value="พร้อม")
+        self.var_status = TrVar(value=tr("พร้อม"))
 
         self.items = []
         self.ids = itertools.count(1)
@@ -793,6 +1057,8 @@ class App(tk.Tk):
 
         os.makedirs(TMP_DIR, exist_ok=True)
         self._build_ui()
+        self._build_menubar()
+        self._translate_widgets(self)
         for _ in range(TITLE_WORKERS):
             threading.Thread(target=self._title_worker, daemon=True).start()
         for it in load_json(QUEUE_FILE, []):
@@ -801,12 +1067,22 @@ class App(tk.Tk):
                                   convert=bool(it.get("convert", False)), subdir=it.get("subdir", "")):
                     self.items[-1]["custom_title"] = bool(it.get("custom_title", False))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.tray = None
+        self.tray_state = None
+        self._setup_tray()
+        self.autostart = False  # ลิงก์จาก extension: เริ่มโหลดให้เองเมื่อพร้อม
+        try:
+            self.ext_server = start_extension_server(lambda urls, go: self.events.put(("ext_add", urls, go)))
+        except OSError as e:
+            self.ext_server = None
+            self.write_log(f"เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้ (port {EXT_PORT}): {e}")
+        self.after(15000, self.push_error_logs)
         self.bench_ready = False
         threading.Thread(target=lambda: self.events.put(("encoders", benchmark_encoders())), daemon=True).start()
         self.after(100, self._pump)
 
         if not os.path.isfile(YTDLP):
-            messagebox.showerror(APP_NAME, f"ไม่เจอ yt-dlp.exe ที่\n{YTDLP}")
+            messagebox.showerror(APP_NAME, tr(f"ไม่เจอ yt-dlp.exe ที่\n{YTDLP}") + "\n\nsetup.bat")
         elif self.var_update.get():
             self.run_update()
             self.check_app_update()
@@ -875,25 +1151,25 @@ class App(tk.Tk):
         r1 = ttk.Frame(opt)
         r1.pack(fill="x", padx=6, pady=2)
         ttk.Label(r1, text="รูปแบบ:").pack(side="left")
-        ttk.Combobox(r1, textvariable=self.var_format, values=list(FORMATS), state="readonly",
+        ttk.Combobox(r1, textvariable=self.var_format, values=[tr(k) for k in FORMATS], state="readonly",
                      width=30).pack(side="left", padx=6)
         ttk.Label(r1, text="ความชัด:").pack(side="left", padx=(8, 0))
-        ttk.Combobox(r1, textvariable=self.var_res, values=list(RESOLUTIONS), state="readonly",
+        ttk.Combobox(r1, textvariable=self.var_res, values=[tr(k) for k in RESOLUTIONS], state="readonly",
                      width=7).pack(side="left", padx=4)
         ttk.Label(r1, text="Cookies จาก:").pack(side="left", padx=(12, 0))
-        ttk.Combobox(r1, textvariable=self.var_cookies, values=BROWSERS, state="readonly",
+        ttk.Combobox(r1, textvariable=self.var_cookies, values=[tr(b) for b in BROWSERS], state="readonly",
                      width=10).pack(side="left", padx=6)
         ttk.Checkbutton(r1, text="ใช้ aria2c (โหลดเร็ว)", variable=self.var_aria).pack(side="left", padx=12)
-        ttk.Label(r1, text="โหลดพร้อมกัน:").pack(side="left", padx=(12, 0))
-        ttk.Spinbox(r1, from_=1, to=8, textvariable=self.var_max_dl, width=4,
+        r1b = ttk.Frame(opt)  # แยกเป็นแถวที่ 2 ภาษาอังกฤษข้อความยาวกว่า ไม่งั้นล้นจอ
+        r1b.pack(fill="x", padx=6, pady=(2, 6))
+        ttk.Label(r1b, text="โหลดพร้อมกัน:").pack(side="left")
+        ttk.Spinbox(r1b, from_=1, to=8, textvariable=self.var_max_dl, width=4,
                     state="readonly").pack(side="left", padx=4)
-        ttk.Label(r1, text="ลิงก์").pack(side="left")
-        ttk.Label(r1, text="หน้ารวมสูงสุด:").pack(side="left", padx=(12, 0))
-        ttk.Spinbox(r1, from_=1, to=50, textvariable=self.var_max_pages, width=4).pack(side="left", padx=4)
-        ttk.Label(r1, text="ชิ้นส่วนพร้อมกัน:").pack(side="left", padx=(12, 0))
-        ttk.Spinbox(r1, from_=1, to=32, textvariable=self.var_frags, width=4).pack(side="left", padx=4)
-
-        ttk.Checkbutton(r1, text="เช็คอัปเดตตอนเปิด", variable=self.var_update).pack(side="right")
+        ttk.Label(r1b, text="หน้ารวมสูงสุด:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(r1b, from_=1, to=50, textvariable=self.var_max_pages, width=4).pack(side="left", padx=4)
+        ttk.Label(r1b, text="ชิ้นส่วนพร้อมกัน:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(r1b, from_=1, to=32, textvariable=self.var_frags, width=4).pack(side="left", padx=4)
+        ttk.Checkbutton(r1b, text="เช็คอัปเดตตอนเปิด", variable=self.var_update).pack(side="right")
 
         conv = ttk.LabelFrame(self, text="ตั้งค่าการแปลง H.265 (ใช้กับคลิปที่ติ๊ก ☑ ในช่อง \"แปลง\")")
         conv.pack(fill="x", padx=8, pady=4)
@@ -925,7 +1201,7 @@ class App(tk.Tk):
         self.btn_start.pack(side="left")
         self.btn_stop = ttk.Button(act, text="■ หยุด", command=self.stop, state="disabled")
         self.btn_stop.pack(side="left", padx=4)
-        self.btn_update = ttk.Button(act, text="อัปเดต yt-dlp", command=self.run_update)
+        self.btn_update = ttk.Button(act, text="อัปเดตเครื่องมือ", command=self.run_update)
         self.btn_update.pack(side="left", padx=4)
         ttk.Label(act, textvariable=self.var_status).pack(side="left", padx=12)
 
@@ -953,7 +1229,47 @@ class App(tk.Tk):
             return "break"
         return None
 
+    def _translate_widgets(self, w):
+        """แปลข้อความบนปุ่ม/ป้าย/กรอบ/หัวตาราง ทั้งหมดหลังสร้างหน้าจอ"""
+        for c in w.winfo_children():
+            try:
+                t = c.cget("text")
+                if isinstance(t, str) and t:
+                    c.configure(text=tr(t))
+            except tk.TclError:
+                pass
+            if isinstance(c, ttk.Treeview):
+                for col in c["columns"]:
+                    c.heading(col, text=tr(c.heading(col, "text")))
+            self._translate_widgets(c)
+
+    def _build_menubar(self):
+        bar = tk.Menu(self)
+        lang = tk.Menu(bar, tearoff=0)
+        self.var_lang = tk.StringVar(value=self.lang)
+        for code, name in LANGS.items():
+            lang.add_radiobutton(label=name, value=code, variable=self.var_lang,
+                                 command=lambda c=code: self.change_language(c))
+        bar.add_cascade(label="Language / ภาษา", menu=lang)
+        self.config(menu=bar)
+
+    def change_language(self, code):
+        """เปลี่ยนภาษาแล้วเปิดแอปใหม่ (คิวและค่าที่ตั้งไว้ยังอยู่)"""
+        if code == self.lang:
+            return
+        if self.running and not messagebox.askyesno(APP_NAME, tr("กำลังโหลด/แปลงอยู่ จะปิดและหยุดเลยไหม") + "?"):
+            self.var_lang.set(self.lang)
+            return
+        self.stop()
+        self.lang = code
+        self.save_settings()
+        self.save_queue()
+        args = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(__file__)]
+        subprocess.Popen(args, cwd=APP_DIR)
+        self.destroy()
+
     def write_log(self, text):
+        text = tr(text)
         self.log.configure(state="normal")
         self.log.insert("end", text.rstrip("\n") + "\n")
         if int(self.log.index("end-1c").split(".")[0]) > 3000:
@@ -1029,7 +1345,7 @@ class App(tk.Tk):
         if self.tree.exists(it["iid"]):
             idx = self.items.index(it) + 1
             self.tree.item(it["iid"], values=(idx, it["title"] or it["file"] or "-", it["url"],
-                                              it.get("subdir", ""), it["status"], it["progress"],
+                                              it.get("subdir", ""), tr(it["status"]), tr(it["progress"]),
                                               "☑" if it["convert"] else "☐"))
 
     def _renumber(self):
@@ -1122,6 +1438,9 @@ class App(tk.Tk):
                       state="normal" if has_file else "disabled")
         m.add_separator()
         m.add_command(label="ลบออกจากคิว", command=self.remove_selected, state="disabled" if busy else "normal")
+        for i in range((m.index("end") or 0) + 1):
+            if m.type(i) == "command":
+                m.entryconfigure(i, label=tr(m.entrycget(i, "label")))
         m.tk_popup(e.x_root, e.y_root)
 
     def _copy_text(self, text):
@@ -1170,14 +1489,14 @@ class App(tk.Tk):
     def menu_edit_url(self, it):
         if not it:
             return
-        new = simpledialog.askstring("แก้ไขลิงก์", "ลิงก์ใหม่:", initialvalue=it["url"], parent=self)
+        new = simpledialog.askstring(tr("แก้ไขลิงก์"), tr("ลิงก์ใหม่") + ":", initialvalue=it["url"], parent=self)
         if not new or not new.strip() or new.strip() == it["url"]:
             return
         new = new.strip()
         key = url_key(new)
         dup = next((i for i in self.items if i is not it and i["key"] == key), None)
         if dup:
-            messagebox.showwarning(APP_NAME, f"ลิงก์นี้ซ้ำกับแถว #{self.items.index(dup) + 1} อยู่แล้ว", parent=self)
+            messagebox.showwarning(APP_NAME, tr(f"ลิงก์นี้ซ้ำกับแถว #{self.items.index(dup) + 1} อยู่แล้ว"), parent=self)
             return
         it["url"], it["key"] = new, key
         if not it.get("custom_title"):
@@ -1192,7 +1511,7 @@ class App(tk.Tk):
     def menu_edit_title(self, it):
         if not it:
             return
-        new = simpledialog.askstring("แก้ไขชื่อ", "ชื่อใหม่ (ใช้เป็นชื่อไฟล์ตอนโหลด):",
+        new = simpledialog.askstring(tr("แก้ไขชื่อ"), tr("ชื่อใหม่ (ใช้เป็นชื่อไฟล์ตอนโหลด)") + ":",
                                      initialvalue=it["title"], parent=self)
         if new is None or not new.strip():
             return
@@ -1299,10 +1618,11 @@ class App(tk.Tk):
 
     def save_settings(self):
         save_json(SETTINGS_FILE, {
-            "out_dir": self.var_out.get(), "format": self.var_format.get(), "resolution": self.var_res.get(),
+            "out_dir": self.var_out.get(), "format": from_display(self.var_format.get(), FORMATS),
+            "resolution": from_display(self.var_res.get(), RESOLUTIONS), "lang": self.lang,
             "crf": to_int(self.var_crf, DEFAULTS["crf"], 0, 51), "preset": self.var_preset.get(),
             "container": self.var_container.get(), "aria2c": self.var_aria.get(),
-            "cookies": self.var_cookies.get(), "update_on_start": self.var_update.get(),
+            "cookies": from_display(self.var_cookies.get(), BROWSERS), "update_on_start": self.var_update.get(),
             "auto_clear": self.var_auto_clear.get(), "max_pages": to_int(self.var_max_pages, 5, 1, 50),
             "max_dl": to_int(self.var_max_dl, 3, 1, 8), "max_conv": to_int(self.var_max_conv, 1, 1, 4),
             "frags": to_int(self.var_frags, 16, 1, 32),
@@ -1349,7 +1669,7 @@ class App(tk.Tk):
                     self.procs.pop(key, None)
 
     def _cookie_args(self):
-        c = self.var_cookies.get()
+        c = from_display(self.var_cookies.get(), BROWSERS)
         return ["--cookies-from-browser", c] if c in BROWSERS[1:] else []
 
     def _title_worker(self):
@@ -1437,14 +1757,29 @@ class App(tk.Tk):
         self.busy_updating = True
         self.btn_start.configure(state="disabled")
         self.btn_update.configure(state="disabled")
-        self.var_status.set("กำลังเช็คอัปเดต yt-dlp ...")
+        self.var_status.set("กำลังเช็คอัปเดตเครื่องมือ ...")
 
         def work():
-            try:
-                rc = self._run_proc([YTDLP, "-U"], lambda l: self.events.put(("log", l)))
-            except OSError as e:
-                self.events.put(("log", f"อัปเดตไม่ได้: {e}"))
-                rc = -1
+            rc = 0
+            log = lambda m: self.events.put(("log", m))
+            for name in TOOLS:
+                try:
+                    local = local_tool_version(name)
+                    remote, url = remote_tool(name)
+                    if not remote:
+                        log(f"[อัปเดต] {name}: หาเวอร์ชันล่าสุดไม่เจอ ข้าม")
+                        continue
+                    if not tool_is_newer(name, remote, local):
+                        log(f"[อัปเดต] {name} {local} ล่าสุดแล้ว")
+                        continue
+                    log(f"[อัปเดต] {name} {local or 'ยังไม่มี'} -> {remote} กำลังโหลด ...")
+                    self.events.put(("notice", f"กำลังอัปเดต {name} เป็น {remote} ..."))
+                    update_tool(name, url, lambda pct, n=name: self.events.put(
+                        ("status", f"กำลังอัปเดต {n} ... {pct}%")))
+                    log(f"[อัปเดต] {name} -> {remote} เสร็จ")
+                except Exception as e:
+                    rc = 1
+                    log(f"[อัปเดต] {name} อัปเดตไม่ได้: {e}")
             self.events.put(("update_done", rc))
 
         threading.Thread(target=work, daemon=True).start()
@@ -1453,8 +1788,8 @@ class App(tk.Tk):
         """อ่านค่าจากหน้าจอใน main thread แล้วส่งให้ thread ใช้ (Tk ห้ามแตะจาก thread อื่น)"""
         return {
             "out": self.var_out.get().strip() or DEFAULTS["out_dir"],
-            "format": FORMATS.get(self.var_format.get(), FORMATS[DEFAULTS["format"]]),
-            "res": RESOLUTIONS.get(self.var_res.get(), 0),
+            "format": FORMATS.get(from_display(self.var_format.get(), FORMATS), FORMATS[DEFAULTS["format"]]),
+            "res": RESOLUTIONS.get(from_display(self.var_res.get(), RESOLUTIONS), 0),
             "cookies": self._cookie_args(),
             "aria2c": self.var_aria.get(),
             "frags": to_int(self.var_frags, 16, 1, 32),
@@ -1549,6 +1884,18 @@ class App(tk.Tk):
                 self.stopping or not any(i["status"] in (WAIT, WAIT_CONV) for i in self.items)):
             self._finish()
 
+    def push_error_logs(self, wait=False):
+        """ส่ง error log ขึ้น repo private (เบื้องหลัง) ถ้ามีไฟล์ใหม่"""
+        def work():
+            n = upload_error_logs()
+            if n:
+                self.events.put(("log", f"ส่ง error log ขึ้น GitHub แล้ว {n} ไฟล์"))
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        if wait:
+            t.join(15)
+
     def _finish(self):
         self.running = False
         self.btn_start.configure(state="normal")
@@ -1558,6 +1905,7 @@ class App(tk.Tk):
         self.var_status.set("หยุดแล้ว" if self.stopping else
                             f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}")
         self.save_queue()
+        self.push_error_logs()
         if self.pending_update and not self.stopping:
             self.var_status.set("คิวเสร็จแล้ว กำลังอัปเดตแอป ...")
             self.after(1500, self._apply_app_update)
@@ -1742,7 +2090,7 @@ class App(tk.Tk):
             self.events.put(("have", item_id, rc[5:]))
             return
         reason = "หาลิงก์วิดีโอไม่เจอ" if rc == NO_MEDIA else fail_reason(last["out"])
-        self.events.put(("dl_done", item_id, rc, file, reason))
+        self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
 
     def _convert_job(self, item_id, src, opts):
         post = lambda prog: self.events.put(("item", item_id, CONV, prog, {}))
@@ -1751,6 +2099,7 @@ class App(tk.Tk):
         dst = base + "." + ext
         tmp = base + ".h265-tmp." + ext
         dur = [0.0]
+        errs = []
 
         def on_line(line):
             m = DUR_RE.search(line)
@@ -1764,6 +2113,7 @@ class App(tk.Tk):
                 pct = f"{min(t / dur[0] * 100, 100):.1f}%" if dur[0] else ""
                 post(f"{pct}  {spd}")
             elif "error" in line.lower() or "invalid" in line.lower():
+                errs.append(line)
                 self.events.put(("log", f"[#{item_id}] {line}"))
 
         def run(enc_name):
@@ -1797,7 +2147,7 @@ class App(tk.Tk):
                 os.remove(tmp)
             except OSError:
                 pass
-        self.events.put(("conv_done", item_id, rc, dst))
+        self.events.put(("conv_done", item_id, rc, dst, f"encoder: {opts['encoder']}\n" + "\n".join(errs[-40:])))
 
     def stop(self):
         if not self.running:
@@ -1839,7 +2189,7 @@ class App(tk.Tk):
                         it["progress"] = prog
                         self._refresh(it)
                 elif kind == "dl_done":
-                    _, item_id, rc, file, reason = ev
+                    _, item_id, rc, file, reason, detail = ev
                     self.active_dl -= 1
                     it = self._find(item_id)
                     if it:
@@ -1851,12 +2201,14 @@ class App(tk.Tk):
                             it["status"], it["progress"] = STOPPED, ""
                         elif rc != 0:
                             it["status"], it["progress"] = FAIL, f"โหลดไม่ได้: {reason}" if reason else f"โหลดไม่ได้ (exit {rc})"
+                            log_error("download", it["progress"], detail, it["url"])
                         elif not it["convert"]:
                             it["status"], it["progress"] = DONE, "100%"
                         elif file and os.path.isfile(file):
                             it["status"], it["progress"] = WAIT_CONV, "โหลดเสร็จ รอแปลง"
                         else:
                             it["status"], it["progress"] = FAIL, "หาไฟล์ที่โหลดไม่เจอ"
+                            log_error("download", it["progress"], detail, it["url"])
                         self._refresh(it)
                     changed = True
                 elif kind == "expanded":
@@ -1883,7 +2235,7 @@ class App(tk.Tk):
                         self._refresh(it)
                     changed = True
                 elif kind == "conv_done":
-                    _, item_id, rc, dst = ev
+                    _, item_id, rc, dst, detail = ev
                     self.active_conv -= 1
                     it = self._find(item_id)
                     if it:
@@ -1898,8 +2250,30 @@ class App(tk.Tk):
                             it["converted"] = True
                         else:
                             it["status"], it["progress"] = FAIL, f"แปลงไม่ได้ (exit {rc})"
+                            log_error("convert", it["progress"], detail, it["url"])
                         self._refresh(it)
                     changed = True
+                elif kind == "ext_add":
+                    _, urls, go = ev
+                    self.write_log(f"รับลิงก์จาก Chrome Extension {len(urls)} ลิงก์")
+                    self.add_urls("\n".join(urls))
+                    if go:
+                        self.autostart = True
+                    if self.tray:
+                        try:
+                            self.tray.notify(tr(f"รับลิงก์จาก Chrome Extension {len(urls)} ลิงก์"), APP_NAME)
+                        except Exception:
+                            pass
+                elif kind == "tray_show":
+                    self.show_window()
+                elif kind == "tray_start":
+                    self.start()
+                elif kind == "tray_exit":
+                    self.show_window()
+                    self.on_close()
+                    return
+                elif kind == "status":
+                    self.var_status.set(ev[1])
                 elif kind == "notice":
                     self.write_log(ev[1])
                     self.var_status.set(ev[1])
@@ -1925,13 +2299,21 @@ class App(tk.Tk):
                     self.busy_updating = False
                     self.btn_start.configure(state="normal")
                     self.btn_update.configure(state="normal")
-                    self.var_status.set("อัปเดตเสร็จ พร้อมโหลด" if ev[1] == 0 else "เช็คอัปเดตไม่สำเร็จ (ดู Log)")
+                    self.var_status.set("อัปเดตเสร็จ พร้อมโหลด" if ev[1] == 0 else "อัปเดตเครื่องมือบางตัวไม่สำเร็จ (ดู Log)")
         except queue.Empty:
             pass
         if changed:
             self.save_queue()
             self._schedule()
         self._auto_clear()
+        if (self.autostart and not self.running and not self.busy_updating
+                and any(i["status"] in (WAIT, WAIT_CONV) for i in self.items)):
+            self.autostart = False
+            self.start()
+        now = time.time()
+        if now - getattr(self, "_tray_t", 0) >= 1:
+            self._tray_t = now
+            self._update_tray()
         self.after(100, self._pump)
 
     def _auto_clear(self):
@@ -1956,10 +2338,92 @@ class App(tk.Tk):
             self._renumber()
             self._update_summary()
 
+    # ---------- System Tray ----------
+    def _setup_tray(self):
+        """ไอคอนใน System Tray: ย่อหน้าต่างแล้วไปอยู่ที่นี่ สีบอกสถานะ ชี้เมาส์ดูรายละเอียด"""
+        try:
+            from PIL import ImageTk
+            self._win_icon = ImageTk.PhotoImage(make_status_icon(TRAY_COLORS["busy"], 32))
+            self.iconphoto(True, self._win_icon)
+        except Exception:
+            pass
+        try:
+            import pystray
+        except ImportError:
+            return
+        menu = pystray.Menu(
+            pystray.MenuItem(lambda item: tr("เปิดหน้าต่าง"), lambda *a: self.events.put(("tray_show",)), default=True),
+            pystray.MenuItem(lambda item: tr("เริ่มโหลด"), lambda *a: self.events.put(("tray_start",))),
+            pystray.MenuItem(lambda item: tr("ออกจากโปรแกรม"), lambda *a: self.events.put(("tray_exit",))))
+        self.tray = pystray.Icon(APP_NAME, make_status_icon(TRAY_COLORS["idle"]), APP_NAME, menu)
+        try:
+            self.tray.run_detached()
+        except Exception:
+            self.tray = None
+            return
+        self.bind("<Unmap>", self._on_unmap)
+        self._update_tray()
+
+    def _on_unmap(self, e):
+        # กดย่อ (minimize) = ซ่อนหน้าต่างไปอยู่ใน System Tray
+        if e.widget is self and self.tray and self.state() == "iconic":
+            self.after(10, self.withdraw)
+
+    def show_window(self):
+        self.deiconify()
+        self.state("normal")
+        self.lift()
+        self.focus_force()
+
+    def _tray_status(self):
+        cnt = lambda *st: sum(1 for i in self.items if i["status"] in st)
+        dl, conv, wait = cnt(DL), cnt(CONV), cnt(WAIT, WAIT_CONV)
+        fail = cnt(FAIL)
+        if dl or conv:
+            state = "busy"
+            text = tr("กำลังโหลด") + f" {dl}" + (f" · {tr('กำลังแปลง')} {conv}" if conv else "")
+            if wait:
+                text += f" · {tr('รอ')} {wait}"
+        elif wait:
+            state, text = "wait", tr("รอโหลด") + f" {wait}"
+        elif self.done_count or fail:
+            state, text = "done", tr("เสร็จหมดแล้ว") + f" ({self.done_count})"
+        else:
+            state, text = "idle", tr("พร้อม")
+        if fail:
+            text += f" · {tr('ล้มเหลว')} {fail}"
+        return state, f"{APP_NAME} v{APP_VERSION}\n{text}"[:127]
+
+    def _update_tray(self):
+        if not self.tray:
+            return
+        state, text = self._tray_status()
+        if state != self.tray_state:
+            self.tray_state = state
+            self.tray.icon = make_status_icon(TRAY_COLORS[state])
+        if self.tray.title != text:
+            self.tray.title = text
+
+    def destroy(self):
+        if getattr(self, "ext_server", None):
+            try:
+                self.ext_server.shutdown()
+            except Exception:
+                pass
+            self.ext_server = None
+        if getattr(self, "tray", None):
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+            self.tray = None
+        super().destroy()
+
     def on_close(self):
-        if self.running and not messagebox.askyesno(APP_NAME, "กำลังโหลด/แปลงอยู่ จะปิดและหยุดเลยไหม?"):
+        if self.running and not messagebox.askyesno(APP_NAME, tr("กำลังโหลด/แปลงอยู่ จะปิดและหยุดเลยไหม") + "?"):
             return
         self.stop()
+        self.push_error_logs(wait=True)
         if self.pending_update:
             self._apply_app_update()
             return
@@ -1968,5 +2432,18 @@ class App(tk.Tk):
         self.destroy()
 
 
+def _install_crash_logging(app):
+    import traceback
+
+    def hook(exc_type, exc, tb):
+        log_error("crash", f"{exc_type.__name__}: {exc}", "".join(traceback.format_exception(exc_type, exc, tb)))
+
+    sys.excepthook = hook
+    threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
+    app.report_callback_exception = hook
+
+
 if __name__ == "__main__":
-    App().mainloop()
+    app = App()
+    _install_crash_logging(app)
+    app.mainloop()

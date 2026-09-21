@@ -36,6 +36,50 @@ Run `setup.bat force` later to update every tool to the newest version.
 
 All of these are listed in `.gitignore`, so they are never committed by accident.
 
+### Chrome extension (one-click download)
+
+The `chrome-extension\` folder is a small Chrome extension that sends links straight to the app.
+
+**Install (once):**
+1. Open `chrome://extensions` in Chrome.
+2. Turn on **Developer mode** (top-right).
+3. Click **Load unpacked** and select the `chrome-extension` folder of this project.
+4. (Optional) Pin the extension to the toolbar.
+
+**Use** (YtdlpGUI must be open, even minimized to the tray):
+- Click the extension icon, or press **Alt+Shift+D**, to download the page you are on.
+- Right-click any link → **Download link with YtdlpGUI**.
+- A green ✓ badge means the link reached the app and the download starts automatically. A red ! means the app is not running.
+
+It only talks to `127.0.0.1:47777` on your own computer. The app accepts links only from the extension (requests must carry the `X-YtdlpGUI` header), so web pages cannot add downloads.
+
+### System tray
+
+Minimizing the window hides it in the system tray. The icon color shows what the app is doing, and hovering shows the details:
+
+| Color | Meaning |
+|---|---|
+| 🟡 Yellow | Clips waiting to download / convert |
+| 🔵 Blue | Downloading or converting |
+| 🟢 Green | All done |
+| ⚪ Gray | Idle, nothing in the queue |
+
+Click the icon to open the window again. Right-click it for Start / Exit.
+
+### Language
+
+Menu **Language / ภาษา** → English or ไทย. English is the default. The app restarts to apply it, and the queue is kept.
+
+### Tool updates
+
+Every time the app starts (with "Check updates on start" ticked) it checks all tools in `bin\` against their GitHub releases and updates any that are newer: yt-dlp, ffmpeg + ffprobe (a new build almost every day, ~190 MB), deno and aria2c. Missing tools are downloaded too. New files are downloaded first and swapped in afterwards, so a failed download never breaks the old tool. The **Update tools** button runs the same check at any time.
+
+### Error logs
+
+- Nothing is written to disk during normal use. The Log box on screen is not saved.
+- Only errors are written to `logs\errors-YYYY-MM-DD.log`: failed downloads (with the last yt-dlp output), failed conversions (with ffmpeg errors) and unexpected crashes (with a traceback). Your Windows user name in paths is replaced by `~`.
+- On the owner's computer the logs are pushed to the **private** repo `KEWI-hub/YtdlpGUI-logs` (15 s after start, when the queue finishes, and on exit), so they can be analyzed and fixed. Other computers have no permission and just keep the local file.
+
 ### Automatic app updates
 
 Every time the app starts (when "เช็คอัปเดตตอนเปิด" / check for updates on start is ticked) it compares its own version (shown in the window title, e.g. `YtdlpGUI v1.1.0`) with the latest GitHub Release:
@@ -77,8 +121,9 @@ Every time the app starts (when "เช็คอัปเดตตอนเป�
 - **Right-click menu**: reset status, force re-download, edit link, edit name (used as the file name), open file / folder, extract links from a page.
 - **Auto-clear**: finished rows disappear after 5 seconds and are logged.
 - **Safe fragments**: never skips a missing fragment. It waits and retries on HTTP 429 instead of producing a broken video.
+- **Tray icon** with status colors, **English / Thai UI**, **Chrome extension** for one-click downloads, **auto-updating tools**, and **error-only logs** pushed to a private repo.
 - **Stall watchdog**: if a download stops growing for 90 s (e.g. stuck at 99.9%), the app restarts it and resumes from where it stopped, up to 5 times.
-- Checks for yt-dlp updates (`yt-dlp -U`) every time it starts, and remembers the queue between runs.
+- Updates all tools and the app itself every time it starts, and remembers the queue between runs.
 
 ### Main settings
 
@@ -101,7 +146,7 @@ Every time the app starts (when "เช็คอัปเดตตอนเป�
 
 | Problem | Fix |
 |---|---|
-| `HTTP 410` / `403` | Press "อัปเดต yt-dlp" (update yt-dlp). With a VPN, keep the same server for the whole download |
+| `HTTP 410` / `403` | Press "Update tools". With a VPN, keep the same server for the whole download |
 | `HTTP 429` | Lower "parallel fragments" / "parallel links" and try again later |
 | "หาลิงก์วิดีโอไม่เจอ" (video link not found) | The page hides the video with heavier JavaScript. Try the clip's own page |
 | A Chrome window pops up | Cloudflare wants a human check. Click it and the app continues |
@@ -132,7 +177,11 @@ The full guide below is in Thai, including every setting, how each feature works
 - **ถ้าการ์ดจอแปลงไม่ผ่าน** จะลองใหม่ด้วย CPU ให้อัตโนมัติ
 - **เว็บที่ yt-dlp ไม่รองรับ** (เช่น missav, 7mmtv) แอปจะอ่านหน้าเว็บ หาลิงก์ m3u8/mp4 แล้วโหลดแบบปลอมตัวเป็น Chrome ให้
 - **เว็บที่มีหลาย server** แอปจะเช็คทุก server เลือกตัวที่ชัดที่สุดก่อน ถ้าโหลดไม่ผ่านจะเปลี่ยน server ให้เอง
-- **เช็คอัปเดต yt-dlp (`yt-dlp -U`) ทุกครั้งที่เปิดแอป**
+- **อัปเดตเครื่องมือทั้ง 5 ตัวทุกครั้งที่เปิดแอป** (yt-dlp, ffmpeg, ffprobe, deno, aria2c) และอัปเดตตัวแอปเองจาก GitHub
+- **ย่อลง System Tray** สีไอคอนบอกสถานะ (เหลือง = รอ / น้ำเงิน = กำลังโหลด / เขียว = เสร็จหมด)
+- **หน้าจอภาษาไทย / English** (ค่าเริ่มต้น English)
+- **Chrome Extension** กดไอคอนหรือคลิกขวาที่ลิงก์ แล้วเริ่มโหลดให้เลย
+- **Error log** เขียนลงไฟล์เฉพาะตอนมี error แล้ว push ขึ้น repo private
 - **แกะลิงก์จากหน้ารวม** วางลิงก์หน้าค้นหา/หมวด/tag/นักแสดง/ช่อง แล้วแอปดึงลิงก์คลิปทั้งหมดเข้าคิวให้ ตามไปหลายหน้าได้ (ตั้งได้ 1–50 หน้า) และโหลดลงโฟลเดอร์ย่อยตามชื่อหน้านั้น
 - **กันโหลดซ้ำ** ลิงก์ซ้ำในคิว (เทียบรหัสคลิป ไม่ใช่แค่ลิงก์), ชื่อคลิปซ้ำในคิว และไฟล์ที่มีอยู่แล้วในโฟลเดอร์ปลายทาง
 - **คลิกขวาที่แถว** รีเซ็ตสถานะ, โหลดซ้ำ, แก้ไขลิงก์, แก้ไขชื่อ (ใช้เป็นชื่อไฟล์), เปิดไฟล์ ฯลฯ
@@ -164,6 +213,62 @@ The full guide below is in Thai, including every setting, how each feature works
 | `_tmp\`, `build\`, คลิปที่โหลดมา | ไฟล์ชั่วคราว / ไฟล์ส่วนตัว | - |
 
 ทั้งหมดนี้อยู่ใน `.gitignore` แล้ว เลยไม่เผลอ commit ขึ้นไป
+
+## Chrome Extension (กดโหลดได้ทันที)
+
+โฟลเดอร์ `chrome-extension\` เป็น extension เล็กๆ ของ Chrome ใช้ส่งลิงก์เข้าแอปตรงๆ ไม่ต้อง copy มาวาง
+
+**ติดตั้ง (ครั้งเดียว):**
+1. เปิด `chrome://extensions` ใน Chrome
+2. เปิด **Developer mode** (มุมขวาบน)
+3. กด **Load unpacked** แล้วเลือกโฟลเดอร์ `chrome-extension` ในโปรเจกต์นี้
+4. (ถ้าต้องการ) กดหมุดให้ไอคอนอยู่บนแถบเครื่องมือ
+
+**ใช้งาน** (ต้องเปิดแอป YtdlpGUI ไว้ ย่อลง tray ได้):
+- กดไอคอน extension หรือกด **Alt+Shift+D** = โหลดหน้าที่เปิดอยู่
+- คลิกขวาที่ลิงก์ → **Download link with YtdlpGUI**
+- ขึ้น ✓ สีเขียว = ส่งเข้าแอปแล้ว และเริ่มโหลดให้เอง / ขึ้น ! สีแดง = ยังไม่ได้เปิดแอป
+
+extension คุยกับแอปผ่าน `127.0.0.1:47777` ในเครื่องเท่านั้น แอปรับลิงก์เฉพาะที่มาจาก extension (ต้องมี header `X-YtdlpGUI`) หน้าเว็บทั่วไปแอบส่งลิงก์เข้าแอปไม่ได้
+
+## System Tray
+
+กดย่อหน้าต่าง (minimize) แล้วแอปจะไปอยู่ที่ System Tray มุมขวาล่าง สีไอคอนบอกสถานะ เอาเมาส์ชี้จะบอกรายละเอียด
+
+| สี | ความหมาย |
+|---|---|
+| 🟡 เหลือง | มีคลิปรอโหลด / รอแปลง |
+| 🔵 น้ำเงิน | กำลังโหลดหรือกำลังแปลง |
+| 🟢 เขียว | เสร็จหมดแล้ว |
+| ⚪ เทา | ว่าง ไม่มีอะไรในคิว |
+
+คลิกไอคอน = เปิดหน้าต่างกลับมา / คลิกขวา = เริ่มโหลด, ออกจากโปรแกรม
+
+## ภาษา
+
+เมนู **Language / ภาษา** ด้านบน → English หรือ ไทย ค่าเริ่มต้นเป็น English แอปจะเปิดใหม่เพื่อเปลี่ยนภาษา คิวยังอยู่ครบ
+
+## อัปเดตเครื่องมือทุกครั้งที่เปิดแอป
+
+ทุกครั้งที่เปิดแอป (ถ้าติ๊ก "เช็คอัปเดตตอนเปิด") แอปจะเทียบเครื่องมือใน `bin\` ทุกตัวกับ Release บน GitHub ตัวไหนใหม่กว่าจะอัปเดตให้เลย
+
+| เครื่องมือ | ออกใหม่บ่อยแค่ไหน |
+|---|---|
+| yt-dlp | บ่อยมาก บางทีหลายครั้งต่อสัปดาห์ |
+| ffmpeg + ffprobe | build ใหม่แทบทุกวัน (ครั้งละ ~190MB) |
+| deno | ประมาณทุก 1–2 สัปดาห์ |
+| aria2c | นานๆ ครั้ง |
+
+- เครื่องมือตัวไหนหายไป จะโหลดมาให้ใหม่
+- โหลดไฟล์ใหม่มาเก็บไว้ก่อนแล้วค่อยสลับ ถ้าโหลดพังกลางทาง ตัวเดิมยังใช้ได้
+- ปุ่ม **อัปเดตเครื่องมือ** กดเช็คเองเมื่อไหร่ก็ได้
+- ระหว่างอัปเดต ปุ่ม "เริ่มโหลด" จะกดไม่ได้ชั่วคราว
+
+## Error log
+
+- ใช้งานปกติ **ไม่เขียนอะไรลงไฟล์** ช่อง Log บนหน้าจอไม่ได้บันทึกเก็บ
+- เขียนลงไฟล์ `logs\errors-ปี-เดือน-วัน.log` **เฉพาะตอนมี error**: โหลดไม่ผ่าน (พร้อมข้อความจาก yt-dlp ท้ายๆ), แปลงไม่ผ่าน (พร้อม error ของ ffmpeg), โปรแกรมพังแบบไม่คาดคิด (พร้อม traceback) ชื่อผู้ใช้ Windows ใน path ถูกแทนด้วย `~`
+- เครื่องของเจ้าของจะ push log ขึ้น repo **private** `KEWI-hub/YtdlpGUI-logs` ให้เอง (15 วินาทีหลังเปิดแอป, ตอนคิวเสร็จ และตอนปิดแอป) เอาไว้ให้ดึงมาวิเคราะห์แก้ไข เครื่องคนอื่นไม่มีสิทธิ์ push เลยเก็บไว้แค่ในเครื่อง
 
 ## อัปเดตแอปอัตโนมัติ
 
@@ -406,6 +511,9 @@ YtdlpGUI\
 ├── requirements.txt  library ที่ต้องใช้ตอน build
 ├── .gitignore        ไฟล์ที่ไม่อัปขึ้น GitHub
 ├── .github\workflows\release.yml  build exe และออก Release ให้อัตโนมัติเมื่อ push tag
+├── i18n.py           คำแปลภาษาอังกฤษของข้อความในแอป
+├── chrome-extension\ Chrome Extension (manifest.json, background.js, icons\)
+├── logs\             error log ในเครื่อง (ไม่อัปขึ้น repo นี้)
 ├── settings.json     ค่าที่ตั้งไว้ (สร้างเองอัตโนมัติ)
 ├── queue.json        คิวที่ค้างอยู่ (สร้างเองอัตโนมัติ)
 ├── _tmp\             ไฟล์ชั่วคราวระหว่างโหลด
@@ -444,7 +552,7 @@ py -3.11 -m PyInstaller --noconfirm --onefile --windowed --collect-all curl_cffi
 
 | อาการ | วิธีแก้ |
 |---|---|
-| HTTP Error 410 / 403 | กด "อัปเดต yt-dlp" แล้วลองใหม่ ถ้าใช้ VPN ต้องเปิดค้างไว้และใช้ server เดิมตลอด (ลิงก์ผูกกับ IP) |
+| HTTP Error 410 / 403 | กด "อัปเดตเครื่องมือ" แล้วลองใหม่ ถ้าใช้ VPN ต้องเปิดค้างไว้และใช้ server เดิมตลอด (ลิงก์ผูกกับ IP) |
 | WARNING m3u8 410 แต่ยังโหลดต่อได้ | ไม่ต้องสนใจ แอปจะเลือกไฟล์ mp4 แทนให้เอง |
 | อ่าน cookie ไม่ได้ | ปิดเบราว์เซอร์นั้นก่อน หรือเปลี่ยน Cookies เป็น firefox / ไม่ใช้ |
 | โหลดด้วย aria2c ไม่ผ่าน | เอาติ๊ก "ใช้ aria2c" ออก |
@@ -547,6 +655,15 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 ## ประวัติการเปลี่ยนแปลง
 
 เรียงจากใหม่ไปเก่า
+
+### v1.2.0 (2026-09-21) — Tray, 2 ภาษา, Chrome Extension, อัปเดตเครื่องมือ, Error log
+
+- อัปเดตเครื่องมือทุกตัวใน `bin\` ทุกครั้งที่เปิดแอป (yt-dlp, ffmpeg, ffprobe, deno, aria2c) โหลดตัวที่หายไปให้ด้วย ปุ่ม "อัปเดต yt-dlp" เปลี่ยนเป็น "อัปเดตเครื่องมือ"
+- ย่อหน้าต่างแล้วไปอยู่ใน System Tray สีไอคอนบอกสถานะ ชี้เมาส์ดูรายละเอียด คลิกขวามีเมนูเริ่มโหลด/ออก ไอคอนหน้าต่างใหม่
+- หน้าจอ 2 ภาษา ไทย / English (ค่าเริ่มต้น English) เมนู Language / ภาษา คำแปลอยู่ใน `i18n.py`
+- Error log: ไม่เขียนไฟล์ตอนใช้งานปกติ เขียนเฉพาะ error (โหลด/แปลงไม่ผ่าน, โปรแกรมพัง) แล้ว push ขึ้น repo private `KEWI-hub/YtdlpGUI-logs`
+- Chrome Extension (`chrome-extension\`): กดไอคอน / Alt+Shift+D / คลิกขวาที่ลิงก์ ส่งเข้าแอปแล้วเริ่มโหลดให้เอง แอปเปิดช่องรับที่ `127.0.0.1:47777` รับเฉพาะจาก extension
+- แยกแถวตั้งค่าเป็น 2 แถว ภาษาอังกฤษจะได้ไม่ล้นจอ
 
 ### v1.1.0 (2026-09-21) — อัปเดตตัวเองจาก GitHub
 
