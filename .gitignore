@@ -33,3 +33,4 @@ logs/
 
 # รายการคลิปที่เคยโหลด (ของแต่ละเครื่อง)
 downloaded.txt
+sources.json

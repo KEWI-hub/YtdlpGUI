@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.5"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.6"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -548,12 +548,65 @@ def find_media(page):
 
 ARCHIVE_FILE = os.path.join(APP_DIR, "downloaded.txt")  # yt-dlp จดรหัสคลิปที่โหลดแล้ว (ใช้กันโหลดซ้ำ)
 ARCHIVE_MSG = "has already been recorded in the archive"
+# ไฟล์ไหนโหลดมาจากลิงก์ไหน (ไว้แยกคลิปคนละอันที่ชื่อเหมือนกัน) {url_key: path ไม่มีนามสกุล}
+SOURCES_FILE = os.path.join(APP_DIR, "sources.json")
+SOURCES = {}
+_names_lock = threading.Lock()
+_reserved = {}  # id คลิปที่กำลังโหลด -> ชื่อไฟล์ที่จองไว้ (กันโหลดพร้อมกันแล้วชื่อชนกัน)
+
+
+def clean_name(name, limit=150):
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", name)
+    return re.sub(r"\s+", " ", name).strip(" .")[:limit].rstrip(" .")
 
 
 def safe_filename(name, limit=150):
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", name)
-    name = re.sub(r"\s+", " ", name).strip(" .")[:limit].rstrip(" .")
-    return name.replace("%", "%%")
+    return clean_name(name, limit).replace("%", "%%")
+
+
+def stem_key(path):
+    return os.path.normcase(os.path.splitext(os.path.abspath(path))[0])
+
+
+def owner_of(path):
+    """ลิงก์ (url_key) ที่ไฟล์นี้โหลดมา หรือ None ถ้าไม่รู้ (ไฟล์เก่า/ไฟล์ที่ไม่ได้โหลดด้วยแอปนี้)"""
+    k = stem_key(path)
+    return next((u for u, v in list(SOURCES.items()) if v == k), None)
+
+
+def remember_source(url, path):
+    if url and path:
+        SOURCES[url_key(url)] = stem_key(path)
+        save_json(SOURCES_FILE, SOURCES)
+
+
+def pick_name(item_id, folder, title, url, limit):
+    """ชื่อไฟล์ (ยังไม่ escape %) ที่ไม่ชนกับคลิปอื่น: ชื่อเดียวกันแต่คนละลิงก์ จะได้ "ชื่อ (2)", "ชื่อ (3)" ...
+    ไฟล์ที่เป็นของลิงก์นี้เองใช้ชื่อเดิมได้ (โหลดซ้ำ = เขียนทับ)"""
+    key = url_key(url)
+    base = clean_name(title, limit) or "video"
+    try:
+        names = [f for f in os.listdir(folder) if f.lower().endswith(VIDEO_EXTS)]
+    except OSError:
+        names = []
+    with _names_lock:
+        for n in range(1, 1000):
+            suffix = f" ({n})" if n > 1 else ""
+            cand = clean_name(base[:max(1, limit - len(suffix))], limit) + suffix
+            ck = stem_key(os.path.join(folder, cand))
+            if any(v == ck for i, v in _reserved.items() if i != item_id):
+                continue
+            if any(stem_key(os.path.join(folder, f)) == ck and owner_of(os.path.join(folder, f)) != key
+                   for f in names):
+                continue
+            _reserved[item_id] = ck
+            return cand
+    return base
+
+
+def release_name(item_id):
+    with _names_lock:
+        _reserved.pop(item_id, None)
 
 
 def default_outtmpl(limit):
@@ -665,14 +718,22 @@ def find_existing(folder, title, url=""):
         names = [n for n in os.listdir(folder) if n.lower().endswith(VIDEO_EXTS) and ".h265-tmp." not in n]
     except OSError:
         return ""
-    key = url_key(url).split(":", 1)[-1] if url else ""
+    ukey = url_key(url) if url else ""
+    key = ukey.split(":", 1)[-1]
+    mine = SOURCES.get(ukey)
     nt = norm_name(title) if title else ""
     for n in names:
+        path = os.path.join(folder, n)
+        if mine and stem_key(path) == mine:  # ไฟล์ที่โหลดจากลิงก์นี้เอง
+            return path
         stem = os.path.splitext(n)[0]
         m = re.search(r"\[([\w-]+)\]$", stem)
         if m and key and m.group(1).lower() == key.lower():
-            return os.path.join(folder, n)
+            return path
         if not nt:
+            continue
+        owner = owner_of(path)
+        if owner and owner != ukey:  # ชื่อเหมือนกัน แต่เป็นคลิปจากลิงก์อื่น
             continue
         ns = norm_name(re.sub(r"\s*\[[\w-]+\]$", "", stem))
         # yt-dlp ตัดชื่อยาวให้สั้นลง เลยยอมให้ขึ้นต้นตรงกันถ้ายาวพอ
@@ -1113,6 +1174,7 @@ class App(tk.Tk):
             os.remove(ARCHIVE_FILE)
         except OSError:
             pass
+        SOURCES.update(load_json(SOURCES_FILE, {}))
         self._build_ui()
         self._build_menubar()
         self._translate_widgets(self)
@@ -1380,20 +1442,6 @@ class App(tk.Tk):
             it["status"], it["progress"], it["file"] = HAVE, os.path.basename(f), f
             self._refresh(it)
             self.write_log(f"มีไฟล์อยู่แล้ว ไม่โหลดซ้ำ: {f}")
-            return True
-        return False
-
-    def _check_title_dup(self, it):
-        """ชื่อคลิปซ้ำกับคลิปอื่นในคิว (ลิงก์ต่างกันแต่คลิปเดียวกัน) ให้เอาออกจากคิว"""
-        if not it["title"] or it["status"] != WAIT:
-            return False
-        nt = norm_name(it["title"])
-        dup = next((i for i in self.items if i is not it and i["title"] and norm_name(i["title"]) == nt), None)
-        if dup:
-            self.write_log(f"ข้ามคลิปซ้ำ (ชื่อเดียวกับ #{self.items.index(dup) + 1}): {it['url']}")
-            self.tree.delete(it["iid"])
-            self.items.remove(it)
-            self._renumber()
             return True
         return False
 
@@ -1926,14 +1974,20 @@ class App(tk.Tk):
                     break
                 if it["status"] == WAIT and self._check_existing(it):
                     continue
+                if it["status"] == WAIT and it["progress"] == "กำลังดึงชื่อ ...":
+                    # รอชื่อก่อน จะได้ตั้งชื่อไฟล์ไม่ให้ชนกับคลิปอื่นที่ชื่อเหมือนกัน (รอนานสุด 90 วิ)
+                    if time.time() - it.setdefault("wait_t", time.time()) < 90:
+                        continue
                 if it["status"] == WAIT:
                     it["status"], it["progress"] = DL, "เริ่ม ..."
                     self._refresh(it)
                     self.active_dl += 1
                     name = it["title"] if it.get("custom_title") else ""
+                    stem = pick_name(it["id"], self._dest(it), it["title"], it["url"],
+                                     self.opts.get("name_max", NAME_MAX)) if it["title"] else ""
                     threading.Thread(target=self._download_job,
                                      args=(it["id"], it["url"], dict(self.opts, force=it["force"], name=name,
-                                                                     out=self._dest(it))),
+                                                                     stem=stem, out=self._dest(it))),
                                      daemon=True).start()
             for it in self.items:
                 if self.active_conv >= max_conv:
@@ -1995,7 +2049,9 @@ class App(tk.Tk):
         last = {"out": ""}
 
         def attempt(target, extra=(), outtmpl=None, aria=True, exclude=None):
-            if opts.get("name"):  # ผู้ใช้ตั้งชื่อเอง
+            if opts.get("stem"):  # ชื่อที่เลือกไว้แล้ว ไม่ชนกับคลิปอื่นที่ชื่อเหมือนกัน
+                outtmpl = opts["stem"].replace("%", "%%") + ".%(ext)s"
+            elif opts.get("name"):  # ผู้ใช้ตั้งชื่อเอง
                 outtmpl = safe_filename(opts["name"], opts.get("name_max", NAME_MAX)) + ".%(ext)s"
             o = dict(opts, exclude=exclude) if exclude else opts
             args = self.build_args(target, o, pathfile, extra, outtmpl, aria)
@@ -2116,7 +2172,10 @@ class App(tk.Tk):
                         scored.append((q, name, m, ref))
                 scored.sort(key=lambda x: x[0], reverse=True)
                 cands = [(n, m, r) for _, n, m, r in scored] or cands
-            fname = safe_filename(title, opts.get("name_max", NAME_MAX)) if title else None
+            fname = None
+            if title and not opts.get("stem"):
+                fname = pick_name(item_id, opts["out"], title, url,
+                                  opts.get("name_max", NAME_MAX)).replace("%", "%%")
             rc = -1
             for name, m, ref in cands:
                 if self.stopping:
@@ -2250,8 +2309,7 @@ class App(tk.Tk):
                         if it["status"] == WAIT:
                             it["progress"] = "" if ev[2] else "ดึงชื่อไม่ได้"
                         self._refresh(it)
-                        if not self._check_title_dup(it):
-                            self._check_existing(it)
+                        self._check_existing(it)
                         self.save_queue()
                 elif kind == "item":
                     _, item_id, status, prog, kw = ev
@@ -2262,10 +2320,13 @@ class App(tk.Tk):
                 elif kind == "dl_done":
                     _, item_id, rc, file, reason, detail = ev
                     self.active_dl -= 1
+                    release_name(item_id)
                     it = self._find(item_id)
                     if it:
                         if file:
                             it["file"] = file
+                            if rc == 0:
+                                remember_source(it["url"], file)
                             if not it["title"]:
                                 it["title"] = os.path.basename(file)
                         if self.stopping:
@@ -2300,6 +2361,7 @@ class App(tk.Tk):
                 elif kind == "have":
                     _, item_id, f = ev
                     self.active_dl -= 1
+                    release_name(item_id)
                     it = self._find(item_id)
                     if it:
                         it["status"], it["file"] = HAVE, f

@@ -139,7 +139,6 @@ EN = {
     "กำลังโหลด/แปลงอยู่ จะปิดและหยุดเลยไหม": "Downloads/conversions are running. Close and stop them",
     # --- Log ---
     "ข้ามลิงก์ซ้ำ (ซ้ำกับ": "Skipped duplicate link (same as",
-    "ข้ามคลิปซ้ำ (ชื่อเดียวกับ": "Skipped duplicate clip (same title as",
     "มีไฟล์อยู่แล้ว ไม่โหลดซ้ำ": "File already exists, not downloading again",
     "แกะลิงก์คลิปจาก": "Extracting clip links from",
     "แกะลิงก์": "Extract links",
