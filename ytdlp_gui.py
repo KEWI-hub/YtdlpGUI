@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.6"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.7"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -1911,8 +1911,8 @@ class App(tk.Tk):
         args = [YTDLP, "--newline", "--no-colors", "--no-warnings", "--no-playlist", "--encoding", "utf-8",
                 "--ffmpeg-location", BIN_DIR, "--js-runtimes", "deno",
                 "-P", opts["out"], "-o", outtmpl or default_outtmpl(opts.get("name_max", NAME_MAX)),
-                # กันเกินอีกชั้น ถ้ารหัสคลิปยาวผิดปกติ
-                "--trim-filenames", str(opts.get("name_max", NAME_MAX)),
+                # ไม่ใช้ --trim-filenames: มันตัดพาธของไฟล์ --print-to-file ด้วย (แอปอยู่ในโฟลเดอร์ลึกๆ แล้วหาไฟล์ที่โหลดไม่เจอ)
+                # ความยาวชื่อคุมจาก -o อยู่แล้ว
                 # โหลดซ้ำ (force) = เขียนทับไฟล์เดิม / ปกติ = ไม่เขียนทับไฟล์ที่มีอยู่
                 "--force-overwrites" if opts.get("force") else "--no-overwrites",
                 "--progress-template",
@@ -2310,7 +2310,7 @@ class App(tk.Tk):
                             it["progress"] = "" if ev[2] else "ดึงชื่อไม่ได้"
                         self._refresh(it)
                         self._check_existing(it)
-                        self.save_queue()
+                        changed = True  # ได้ชื่อแล้ว เริ่มโหลดแถวที่รอชื่ออยู่ได้
                 elif kind == "item":
                     _, item_id, status, prog, kw = ev
                     it = self._find(item_id)
