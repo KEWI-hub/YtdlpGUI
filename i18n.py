@@ -203,8 +203,6 @@ EN = {
     "รับลิงก์จาก Chrome Extension": "Received from Chrome Extension:",
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
-    "เคยโหลดคลิปนี้แล้ว ไม่โหลดซ้ำ (คลิกขวา > โหลดซ้ำ ถ้าต้องการ)":
-        "This clip was downloaded before, skipping (right-click > Download again if you want it)",
     "เคยโหลดแล้ว": "Downloaded before",
     # --- ภาษา ---
     "ภาษา": "Language",

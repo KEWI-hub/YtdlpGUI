@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -590,8 +590,7 @@ def find_media(page, base=""):
     return ""
 
 
-ARCHIVE_FILE = os.path.join(APP_DIR, "downloaded.txt")  # yt-dlp จดรหัสคลิปที่โหลดแล้ว (ใช้กันโหลดซ้ำ)
-ARCHIVE_MSG = "has already been recorded in the archive"
+OLD_ARCHIVE = os.path.join(APP_DIR, "downloaded.txt")  # ไฟล์ประวัติของเวอร์ชันเก่า (เลิกใช้แล้ว ลบทิ้งตอนเปิดแอป)
 # ไฟล์ไหนโหลดมาจากลิงก์ไหน (ไว้แยกคลิปคนละอันที่ชื่อเหมือนกัน) {url_key: path ไม่มีนามสกุล}
 SOURCES_FILE = os.path.join(APP_DIR, "sources.json")
 SOURCES = {}
@@ -1214,8 +1213,8 @@ class App(tk.Tk):
         self.cancelled = set()  # id ของคลิปที่ผู้ใช้เอาติ๊กแปลงออกระหว่างแปลง
 
         os.makedirs(TMP_DIR, exist_ok=True)
-        try:  # ล้างประวัติคลิปที่โหลดแล้วทุกครั้งที่เปิดแอป (กันซ้ำแค่ในรอบนี้ ข้ามรอบใช้เช็คไฟล์ในโฟลเดอร์แทน)
-            os.remove(ARCHIVE_FILE)
+        try:  # เลิกใช้ประวัติของ yt-dlp แล้ว (รหัสคลิปที่แกะจากลิงก์วิดีโอซ้ำกันจนข้ามคลิปอื่นทิ้ง)
+            os.remove(OLD_ARCHIVE)
         except OSError:
             pass
         SOURCES.update(load_json(SOURCES_FILE, {}))
@@ -1992,8 +1991,6 @@ class App(tk.Tk):
             fmt[i] = "/".join("+".join(p + ex if n == 0 else p for n, p in enumerate(alt.split("+")))
                               for alt in fmt[i].split("/"))
         args += fmt + opts["cookies"] + list(extra)
-        if not opts.get("force"):
-            args += ["--download-archive", ARCHIVE_FILE]
         # ห้ามข้ามชิ้นที่โหลดไม่ได้ (ไม่งั้นได้วิดีโอที่ขาดเป็นช่วงๆ) โดน 429 ให้รอนานขึ้นเรื่อยๆ แล้วลองใหม่
         args += ["--abort-on-unavailable-fragments", "--fragment-retries", "30",
                  "--retry-sleep", "fragment:exp=1:30", "--retries", "10"]
@@ -2281,11 +2278,6 @@ class App(tk.Tk):
         file = files[-1] if files else ""
         if isinstance(rc, str) and rc.startswith("have:"):
             self.events.put(("have", item_id, rc[5:]))
-            return
-        if ARCHIVE_MSG in last["out"] and not file:
-            # เคยโหลดคลิปนี้ไปแล้ว (อยู่ใน downloaded.txt) ไม่โหลดซ้ำ
-            self.events.put(("log", f"[#{item_id}] เคยโหลดคลิปนี้แล้ว ไม่โหลดซ้ำ (คลิกขวา > โหลดซ้ำ ถ้าต้องการ)"))
-            self.events.put(("have", item_id, ""))
             return
         reason = "หาลิงก์วิดีโอไม่เจอ" if rc == NO_MEDIA else fail_reason(last["out"])
         self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
