@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.7"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.8"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -355,7 +355,7 @@ def resolve_embed(embed, referer, depth=0):
     if embed.startswith("//"):
         embed = "https:" + embed
     page = fetch_with_referer(embed, referer)
-    media = find_media(page)
+    media = find_media(page, embed)
     if media:
         return media, embed
     if depth < 2:
@@ -535,8 +535,35 @@ def expand_listing(url, notify=None, stop=lambda: False, max_pages=MAX_LISTING_P
     return out[:MAX_LISTING_LINKS]
 
 
-def find_media(page):
+# ตัวเล่นวิดีโอบางเจ้า (jwplayer) เก็บลิงก์ไว้หลายตัวใน links = {"hls2":..,"hls3":..,"hls4":..}
+# แล้วเล่นจาก hls4 ก่อน ตัวท้ายๆ เร็วกว่าตัวแรกมาก (hls2 มักโดนจำกัดความเร็ว sp=500)
+LINKS_RE = re.compile(r"""links\s*=\s*(\{[^{}]{0,4000}?\})""")
+
+
+def player_links(text, base=""):
+    """ลิงก์จาก links = {...} ของ player เรียงตัวที่เร็วที่สุดก่อน (hls4 > hls3 > hls2)"""
+    out = []
+    for m in LINKS_RE.finditer(text):
+        try:
+            d = json.loads(m.group(1))
+        except ValueError:
+            continue
+        for k in sorted(d, key=lambda k: (-int(re.sub(r"\D", "", k) or 0), k)):
+            u = d[k]
+            if not isinstance(u, str) or not u.strip():
+                continue
+            u = urllib.parse.urljoin(base, u) if base else u
+            if u.startswith("http") and u not in out:
+                out.append(u)
+    return out
+
+
+def find_media(page, base=""):
     text = (page + "\n" + unpack_js(page)).replace("\\/", "/")
+    for u in player_links(text, base):
+        # .txt คือ m3u8 ที่เปลี่ยนนามสกุล บาง server ใช้กันโดนบล็อก
+        if re.search(r"\.(m3u8|mp4|txt)(\?|$)", u, re.I):
+            return u
     urls = list(dict.fromkeys(MEDIA_RE.findall(text)))
     urls = [u for u in urls if not re.search(r"preview|thumb|trailer|sample", u, re.I)]
     for good in (r"(playlist|master)\.m3u8", r"\.m3u8", r"\.mp4"):

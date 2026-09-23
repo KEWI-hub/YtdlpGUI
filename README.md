@@ -117,7 +117,7 @@ Every time the app starts (when "เช็คอัปเดตตอนเป�
 - **Per-clip H.265 conversion**: tick ☑ in the "แปลง" (convert) column. A separate conversion queue runs while downloads continue.
 - **GPU auto-pick**: benchmarks NVENC / AMF / QSV / x265 at every start and picks the best. You can change it in the dropdown.
 - **Listing pages**: paste a search / category / tag / actor / channel page and every clip link is added (follows up to 50 pages), saved into a sub-folder named after the page.
-- **Sites yt-dlp does not support**: reads the page itself, finds the m3u8/mp4, tries every server and picks the sharpest one, then falls back to the next server or a lower resolution on 403.
+- **Sites yt-dlp does not support**: reads the page itself, finds the m3u8/mp4, tries every server and picks the sharpest one, then falls back to the next server or a lower resolution on 403. When the page's player lists several links (`hls2`/`hls3`/`hls4`), it takes the same one the player itself plays — on these sites that is 100x+ faster than the first link in the page.
 - **Cloudflare**: curl_cffi first, then a hidden Chrome, then a visible Chrome window where *you* click "Verify you are human" (the app never clicks it for you).
 - **No duplicates**: same clip in the queue (compared by clip ID, not raw URL) and files that already exist in the target folder are skipped ("มีแล้ว" = already have).
 - **Same title, different clips**: both are downloaded. The second one is saved as `Title (2).mp4`, the third as `Title (3).mp4`, and so on. The app remembers which link each file came from (`sources.json`), so a same-title file from another link is never treated as "already have" and is never overwritten.
@@ -476,7 +476,7 @@ extension คุยกับแอปผ่าน `127.0.0.1:47777` ในเค
 ## เว็บที่มีหลาย server (เช่น 7mmtv)
 
 1. อ่านหน้าเว็บ แล้วให้ Chrome แบบซ่อนกดปุ่มเลือก server ทุกปุ่มด้วย JavaScript ของเว็บเอง เพื่อดูว่าแต่ละ server ใช้ player ตัวไหน
-2. เปิด player ของแต่ละ server หาลิงก์ m3u8/mp4 (ถ้ามี iframe ซ้อนอยู่ จะตามเข้าไปได้อีก 2 ชั้น)
+2. เปิด player ของแต่ละ server หาลิงก์ m3u8/mp4 (ถ้ามี iframe ซ้อนอยู่ จะตามเข้าไปได้อีก 2 ชั้น) ถ้า player เก็บลิงก์ไว้หลายตัว (`links = {"hls2":..,"hls4":..}`) จะเลือกตัวเลขมากสุดก่อน เพราะเป็นตัวที่ player ใช้เล่นจริงและเร็วกว่ามาก (ดูหัวข้อ "ทำไมบางเว็บโหลดช้า")
 3. ถาม yt-dlp ว่าแต่ละ server ชัดแค่ไหน แล้วเรียงจากชัดสุด (ความละเอียดก่อน แล้วค่อยดู bitrate)
 4. โหลดจาก server ที่ชัดที่สุดก่อน ถ้าไม่ผ่านจะเปลี่ยนไป server ถัดไปเอง
 
@@ -493,6 +493,15 @@ server SP: 0p 0k
 ใช้เวลาเตรียมประมาณ 15–30 วินาทีต่อลิงก์ก่อนเริ่มโหลด ตอนนี้กดปุ่มเลือก server ได้เฉพาะ 7mmtv เว็บอื่นแอปจะตาม iframe ในหน้าเว็บให้แทน
 
 ## ทำไมบางเว็บโหลดช้า
+
+**เช็คก่อนว่าได้ลิงก์ที่ถูกตัวไหม** ตัวเล่นวิดีโอ (jwplayer) ของบางเว็บเก็บลิงก์ไว้หลายตัวในตัวแปร `links = {"hls2":..., "hls3":..., "hls4":...}` แล้วเล่นจาก `hls4` ก่อน ตัวแรก (`hls2`) มักเป็นลิงก์ที่เซิร์ฟเวอร์จำกัดความเร็วไว้ (มี `sp=500` ในโทเคน) วัดจริงกับ pornavhd ต่างกันมหาศาล
+
+| ลิงก์ที่ใช้ | ความเร็ว |
+|---|---|
+| `hls2` (ลิงก์แรกในหน้า) | 0.02–0.06 MB/s |
+| `hls4` (ตัวที่ player ใช้จริง) | **34.8 MB/s** |
+
+ตั้งแต่ v1.2.8 แอปเลือก `hls4` ให้เอง (เรียงจากเลขมากไปน้อย) ถ้าเจอว่าเว็บไหนยังช้าผิดปกติ ให้เทียบกับความเร็วที่โหลดผ่านเบราว์เซอร์/IDM ดู
 
 เว็บสตรีมอย่าง 7mmtv หรือ missav ส่งวิดีโอมาเป็นชิ้นเล็กๆ (m3u8) และจำกัดความเร็วไว้ประมาณ **0.4 MiB/s ต่อ 1 connection** ต่อให้เน็ตเร็วแค่ไหนก็ช่วยไม่ได้ ทางแก้คือโหลดหลายชิ้นพร้อมกัน
 
@@ -678,6 +687,12 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 ## ประวัติการเปลี่ยนแปลง
 
 เรียงจากใหม่ไปเก่า
+
+### v1.2.8 (2026-09-23) — แก้โหลดช้าผิดปกติ เร็วขึ้นหลายร้อยเท่า
+
+- เว็บที่แอปอ่านหน้าเว็บเอง (เช่น pornavhd) player เก็บลิงก์ไว้หลายตัว `links = {"hls2":..,"hls3":..,"hls4":..}` แล้วเล่นจาก `hls4` แต่แอปหยิบ `hls2` มาใช้ เพราะ `hls4` เขียนเป็นพาธสั้น (`/stream/...`) ไม่ใช่ลิงก์เต็ม เลยไม่เข้าเงื่อนไขการค้นหา
+- `hls2` เป็นลิงก์ที่เซิร์ฟเวอร์จำกัดความเร็วไว้ วัดได้ 0.02–0.06 MB/s ส่วน `hls4` วัดได้ 34.8 MB/s (คลิป 1.2 GB ใน 35 วินาที)
+- ตอนนี้แอปเลือกลิงก์จาก player โดยเรียงเลขมากไปน้อย (hls4 → hls3 → hls2) และรองรับลิงก์แบบพาธสั้นกับไฟล์ `.txt` (m3u8 ที่เปลี่ยนนามสกุล) แล้ว
 
 ### v1.2.7 (2026-09-22) — แก้จากการทดสอบโหลดจริง
 
