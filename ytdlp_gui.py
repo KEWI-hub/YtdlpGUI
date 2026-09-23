@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.8"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.9"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -137,6 +137,17 @@ def is_7mm(url):
 
 
 NO_YTDLP_HOSTS = set()  # เว็บที่ yt-dlp บอกว่าไม่รองรับ (จำไว้ ครั้งต่อไปอ่านหน้าเว็บเลย)
+
+
+def short_url(url, keep=44):
+    """ลิงก์แบบสั้นไว้โชว์ในตาราง (ดับเบิลคลิกยังคัดลอกลิงก์เต็มได้เหมือนเดิม)"""
+    m = re.match(r"https?://(?:www\.|m\.)?([^/?#]+)([^?#]*)", url or "")
+    if not m:
+        return url
+    host, path = m.group(1), m.group(2).rstrip("/")
+    last = path.rsplit("/", 1)[-1] if path else ""
+    short = f"{host}/…/{last}" if last and path.count("/") > 1 else f"{host}{path}"
+    return short if len(short) <= keep else short[:keep - 1] + "…"
 
 
 def url_host(url):
@@ -1336,12 +1347,14 @@ class App(tk.Tk):
         cols = ("no", "title", "url", "folder", "status", "progress", "conv")
         self.conv_col = f"#{cols.index('conv') + 1}"
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
-        for c, t, w, st in [("no", "#", 40, False), ("title", "ชื่อ", 360, True), ("url", "ลิงก์", 180, True),
-                            ("folder", "โฟลเดอร์ย่อย", 110, False),
-                            ("status", "สถานะ", 110, False), ("progress", "ความคืบหน้า", 200, False),
-                            ("conv", "แปลง", 55, False)]:
+        # ช่องที่ยืดได้ = ชื่อคลิป กับ ความคืบหน้า (ข้อความยาวสุด) ที่เหลือกว้างคงที่ จะได้ไม่โดนตัดหาย
+        for c, t, w, mw, st in [("no", "#", 44, 36, False), ("title", "ชื่อ", 280, 120, True),
+                                ("url", "ลิงก์", 230, 140, False), ("folder", "โฟลเดอร์ย่อย", 110, 70, False),
+                                ("status", "สถานะ", 90, 70, False), ("progress", "ความคืบหน้า", 300, 150, True),
+                                ("conv", "แปลง", 55, 45, False)]:
             self.tree.heading(c, text=t)
-            self.tree.column(c, width=w, stretch=st, anchor="w" if c in ("title", "url") else "center")
+            self.tree.column(c, width=w, minwidth=mw, stretch=st,
+                             anchor="w" if c in ("title", "url", "progress") else "center")
         sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
@@ -1574,7 +1587,7 @@ class App(tk.Tk):
     def _refresh(self, it):
         if self.tree.exists(it["iid"]):
             idx = self.items.index(it) + 1
-            self.tree.item(it["iid"], values=(idx, it["title"] or it["file"] or "-", it["url"],
+            self.tree.item(it["iid"], values=(idx, it["title"] or it["file"] or "-", short_url(it["url"]),
                                               it.get("subdir", ""), tr(it["status"]), tr(it["progress"]),
                                               "☑" if it["convert"] else "☐"))
 
