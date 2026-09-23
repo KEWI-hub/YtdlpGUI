@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -188,6 +188,14 @@ def is_challenge(page):
 WEB_TIMEOUT = 60  # บาง server (เช่น recordplay.biz) ตอบช้าถึง ~20 วินาที ต้องรอนานพอ ไม่งั้นตัดทิ้งก่อนเจ้าตัวจะตอบ
 
 
+SLOW_HOSTS = set()  # เว็บที่รอครบ WEB_TIMEOUT แล้วยังไม่ตอบ (ไว้บอกผู้ใช้ว่าเป็น timeout ไม่ใช่หาลิงก์ไม่เจอ)
+
+
+def _note_timeout(url, err):
+    if re.search(r"timed out|timeout|Operation too slow", str(err), re.I):
+        SLOW_HOSTS.add(url_host(url))
+
+
 def fetch_page_simple(url, timeout=WEB_TIMEOUT):
     """ชั้น A: ปลอมตัวเป็น Chrome ด้วย curl_cffi ถ้าไม่มีค่อยใช้ urllib"""
     try:
@@ -196,13 +204,15 @@ def fetch_page_simple(url, timeout=WEB_TIMEOUT):
         return r.text if r.status_code == 200 else ""
     except ImportError:
         pass
-    except Exception:
+    except Exception as e:
+        _note_timeout(url, e)
         return ""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace")
-    except Exception:
+    except Exception as e:
+        _note_timeout(url, e)
         return ""
 
 
@@ -390,7 +400,8 @@ def fetch_with_referer(url, referer, timeout=WEB_TIMEOUT):
         from curl_cffi import requests as cffi
         r = cffi.get(url, impersonate="chrome", headers={"Referer": referer}, timeout=timeout)
         return r.text if r.status_code == 200 else ""
-    except Exception:
+    except Exception as e:
+        _note_timeout(url, e)
         return ""
 
 
@@ -862,6 +873,7 @@ def find_moved_url(url):
 NO_MEDIA = -2  # หาลิงก์วิดีโอไม่เจอ
 DEAD_CLIP = -3  # เว็บบอกเองว่าคลิปถูกลบหรือหมดอายุแล้ว
 PAGE_GONE = -4  # หน้าคลิปบนเว็บถูกลบไปแล้ว (404)
+SLOW_SERVER = -5  # server ของคลิปไม่ตอบเลยจนหมดเวลา
 
 
 def fail_reason(out):
@@ -2343,6 +2355,7 @@ class App(tk.Tk):
                     self.events.put(("log", f"[#{item_id}] มีไฟล์อยู่แล้ว ไม่โหลดซ้ำ: {f}"))
                     return "have:" + f
             gone = [False]  # เว็บบอกเองว่าคลิปถูกลบ ไม่ต้องลองซ้ำ
+            timed_out = [False]  # server ไม่ตอบเลยจนหมดเวลา (คนละเรื่องกับหาลิงก์ไม่เจอ)
 
             def gather(page):
                 """หาลิงก์วิดีโอจากหน้านี้ คืน (ตัวหลักของแต่ละ server, ลิงก์สำรองของ player เดียวกัน)"""
@@ -2360,7 +2373,11 @@ class App(tk.Tk):
                     post(DL, f"กำลังเช็ค server {name} ...")
                     links, ref, dead = resolve_embed_links(embed, cur)
                     if not links and not dead and not fetch_with_referer(embed, cur):
-                        self.events.put(("log", f"[#{item_id}] server {name}: หน้า player ไม่ตอบอะไรเลย"))
+                        slow = url_host(embed) in SLOW_HOSTS
+                        self.events.put(("log", f"[#{item_id}] server {name}: " + (
+                            f"ไม่ตอบเลยใน {WEB_TIMEOUT} วินาที" if slow else "หน้า player ไม่ตอบอะไรเลย")))
+                        if slow:
+                            timed_out[0] = True
                     if dead:
                         self.events.put(("log", f"[#{item_id}] server {name}: เว็บบอกว่าคลิปนี้ถูกลบ"
                                                 f"หรือหมดอายุไปแล้ว"))
@@ -2416,6 +2433,10 @@ class App(tk.Tk):
             if not cands:
                 if gone[0]:
                     return DEAD_CLIP
+                if timed_out[0]:
+                    self.events.put(("log", f"[#{item_id}] server ไม่ตอบเลยใน {WEB_TIMEOUT} วินาที "
+                                            f"(ลองโหลดคลิปนี้ด้วยโปรแกรมอื่นแทน)"))
+                    return SLOW_SERVER
                 self.events.put(("log", f"[#{item_id}] หาลิงก์วิดีโอในหน้าเว็บไม่เจอ"))
                 return NO_MEDIA
             return rc
@@ -2448,7 +2469,8 @@ class App(tk.Tk):
             return
         reason = {NO_MEDIA: "หาลิงก์วิดีโอไม่เจอ",
                   DEAD_CLIP: "เว็บลบคลิปนี้ไปแล้ว",
-                  PAGE_GONE: "หน้าคลิปนี้ไม่มีบนเว็บแล้ว"}.get(rc) or fail_reason(last["out"])
+                  PAGE_GONE: "หน้าคลิปนี้ไม่มีบนเว็บแล้ว",
+                  SLOW_SERVER: f"Timeout: server ไม่ตอบใน {WEB_TIMEOUT} วินาที"}.get(rc) or fail_reason(last["out"])
         self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
 
     def _convert_job(self, item_id, src, opts):
