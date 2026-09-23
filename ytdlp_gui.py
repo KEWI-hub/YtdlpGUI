@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.9"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -1347,14 +1347,17 @@ class App(tk.Tk):
         cols = ("no", "title", "url", "folder", "status", "progress", "conv")
         self.conv_col = f"#{cols.index('conv') + 1}"
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
-        # ช่องที่ยืดได้ = ชื่อคลิป กับ ความคืบหน้า (ข้อความยาวสุด) ที่เหลือกว้างคงที่ จะได้ไม่โดนตัดหาย
-        for c, t, w, mw, st in [("no", "#", 44, 36, False), ("title", "ชื่อ", 280, 120, True),
-                                ("url", "ลิงก์", 230, 140, False), ("folder", "โฟลเดอร์ย่อย", 110, 70, False),
-                                ("status", "สถานะ", 90, 70, False), ("progress", "ความคืบหน้า", 300, 150, True),
-                                ("conv", "แปลง", 55, 45, False)]:
+        # กว้างเท่าไหร่ก็แบ่งตามสัดส่วนนี้ (รวม 100) จะได้เห็นครบทุกช่องตั้งแต่เปิดแอป ไม่ต้องลากขยายเอง
+        self.col_share = {"no": 4, "title": 25, "url": 23, "folder": 11, "status": 10, "progress": 21, "conv": 6}
+        self.col_min = {"no": 34, "title": 110, "url": 120, "folder": 70, "status": 70, "progress": 130, "conv": 45}
+        # ช่องสั้นๆ ไม่ต้องกว้างเกินนี้ ที่เหลือยกให้ "ชื่อ" กับ "ความคืบหน้า"
+        self.col_max = {"no": 46, "folder": 130, "status": 110, "conv": 62}
+        for c, t in [("no", "#"), ("title", "ชื่อ"), ("url", "ลิงก์"), ("folder", "โฟลเดอร์ย่อย"),
+                     ("status", "สถานะ"), ("progress", "ความคืบหน้า"), ("conv", "แปลง")]:
             self.tree.heading(c, text=t)
-            self.tree.column(c, width=w, minwidth=mw, stretch=st,
+            self.tree.column(c, width=self.col_min[c], minwidth=self.col_min[c], stretch=False,
                              anchor="w" if c in ("title", "url", "progress") else "center")
+        self.tree.bind("<Configure>", self._fit_columns)
         sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
@@ -1583,6 +1586,23 @@ class App(tk.Tk):
 
     def _find(self, item_id):
         return next((i for i in self.items if i["id"] == item_id), None)
+
+    def _fit_columns(self, event=None):
+        """แบ่งความกว้างคอลัมน์ตามสัดส่วนของตารางตอนนี้ (เรียกทุกครั้งที่ตารางเปลี่ยนขนาด)"""
+        total = (event.width if event else self.tree.winfo_width()) - 4
+        if total < sum(self.col_min.values()):
+            total = sum(self.col_min.values())
+        if abs(total - getattr(self, "_cols_w", 0)) < 8:
+            return
+        self._cols_w = total
+        w = {c: max(self.col_min[c], total * share // 100) for c, share in self.col_share.items()}
+        for c, mx in self.col_max.items():
+            w[c] = min(w[c], mx)
+        left = total - sum(w.values())  # ที่เหลือจากการตัดช่องสั้น แบ่งให้สองช่องที่ข้อความยาว
+        w["title"] += left // 2
+        w["progress"] += left - left // 2
+        for c, width in w.items():
+            self.tree.column(c, width=width)
 
     def _refresh(self, it):
         if self.tree.exists(it["iid"]):
