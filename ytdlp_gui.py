@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.5"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -375,12 +375,18 @@ def fetch_with_referer(url, referer, timeout=20):
 
 
 def resolve_embed(embed, referer, depth=0):
+    """คืนค่า (ลิงก์วิดีโอตัวที่ควรใช้, หน้าที่ใช้เป็น referer)"""
+    links, ref = resolve_embed_links(embed, referer, depth)
+    return (links[0] if links else ""), ref
+
+
+def resolve_embed_links(embed, referer, depth=0):
     """เปิดหน้า player ของแต่ละ server หาลิงก์ m3u8/mp4 ถ้าไม่เจอให้ตาม iframe ที่ซ้อนอยู่ข้างในอีกชั้น
-    คืนค่า (ลิงก์วิดีโอ, หน้าที่ใช้เป็น referer)"""
+    คืนค่า ([ลิงก์วิดีโอ เรียงตัวที่ควรใช้ก่อน], หน้าที่ใช้เป็น referer)"""
     if embed.startswith("//"):
         embed = "https:" + embed
     page = fetch_with_referer(embed, referer)
-    media = find_media(page, embed)
+    media = find_media_all(page, embed)
     if media:
         return media, embed
     if page and len(page) < 4000 and not IFRAME_RE.search(page) and find_chrome():
@@ -392,7 +398,7 @@ def resolve_embed(embed, referer, depth=0):
         except ValueError:
             data = None
         if data and data.get("h"):
-            media = find_media(data["h"], data.get("u") or embed)
+            media = find_media_all(data["h"], data.get("u") or embed)
             if media:
                 return media, data.get("u") or embed
     if depth < 2:
@@ -400,10 +406,10 @@ def resolve_embed(embed, referer, depth=0):
             if f.startswith("//"):
                 f = "https:" + f
             if f.startswith("http") and not AD_HOSTS.search(f):
-                media, ref = resolve_embed(f, embed, depth + 1)
+                media, ref = resolve_embed_links(f, embed, depth + 1)
                 if media:
                     return media, ref
-    return "", ""
+    return [], ""
 
 
 def get_servers(url, page, notify=None):
@@ -595,19 +601,26 @@ def player_links(text, base=""):
     return out
 
 
-def find_media(page, base=""):
+def find_media_all(page, base=""):
+    """ลิงก์วิดีโอทุกตัวที่เจอในหน้า เรียงตัวที่ควรใช้ก่อน (ลิงก์ของ player ก่อน แล้วค่อยลิงก์อื่นในหน้า)"""
     text = (page + "\n" + unpack_js(page)).replace("\\/", "/")
+    out = []
     for u in player_links(text, base):
         # .txt คือ m3u8 ที่เปลี่ยนนามสกุล บาง server ใช้กันโดนบล็อก
-        if re.search(r"\.(m3u8|mp4|txt)(\?|$)", u, re.I):
-            return u
+        if re.search(r"\.(m3u8|mp4|txt)(\?|$)", u, re.I) and u not in out:
+            out.append(u)
     urls = list(dict.fromkeys(MEDIA_RE.findall(text)))
     urls = [u for u in urls if not re.search(r"preview|thumb|trailer|sample", u, re.I)]
     for good in (r"(playlist|master)\.m3u8", r"\.m3u8", r"\.mp4"):
         for u in urls:
-            if re.search(good, u, re.I):
-                return u
-    return ""
+            if re.search(good, u, re.I) and u not in out:
+                out.append(u)
+    return out
+
+
+def find_media(page, base=""):
+    links = find_media_all(page, base)
+    return links[0] if links else ""
 
 
 OLD_ARCHIVE = os.path.join(APP_DIR, "downloaded.txt")  # ไฟล์ประวัติของเวอร์ชันเก่า (เลิกใช้แล้ว ลบทิ้งตอนเปิดแอป)
@@ -813,9 +826,11 @@ def fail_reason(out):
     m = re.search(r"HTTP Error (\d+)", out)
     if m:
         return f"HTTP {m.group(1)}"
-    for key, msg in (("stalled", "ค้างหลายรอบ ลองใหม่ทีหลัง"), ("Unsupported URL", "เว็บไม่รองรับ"), ("Requested format is not available", "ไม่มีรูปแบบที่เลือก"),
+    for key, msg in (("stalled", "ค้างหลายรอบ ลองใหม่ทีหลัง"), ("Unsupported URL", "เว็บไม่รองรับ"),
+                     ("Requested format is not available", "ไม่มีรูปแบบที่เลือก"),
+                     ("Operation too slow", "เซิร์ฟเวอร์ตอบช้ามาก"), ("fragment 1 not found", "ไฟล์หายจากเซิร์ฟเวอร์"),
                      ("Private video", "คลิปส่วนตัว"), ("Sign in", "ต้องล็อกอิน"), ("timed out", "หมดเวลา"),
-                     ("cookies", "อ่าน cookie ไม่ได้")):
+                     ("could not copy", "อ่าน cookie ไม่ได้"), ("cookie database", "อ่าน cookie ไม่ได้")):
         if key.lower() in out.lower():
             return msg
     return ""
@@ -2252,54 +2267,70 @@ class App(tk.Tk):
                 if f:
                     self.events.put(("log", f"[#{item_id}] มีไฟล์อยู่แล้ว ไม่โหลดซ้ำ: {f}"))
                     return "have:" + f
-            cands = []  # (ชื่อ, ลิงก์วิดีโอ, referer)
-            media = find_media(page) if not is_7mm(url) else ""  # 7mmtv มีคลิปตัวอย่างอื่นปนในหน้า
-            if media:
-                cands.append(("หน้าเว็บ", media, url))
-            if not cands:
+            def gather(page):
+                """หาลิงก์วิดีโอจากหน้านี้ คืน (ตัวหลักของแต่ละ server, ลิงก์สำรองของ player เดียวกัน)"""
+                cands, spare = [], []
+                media = find_media(page) if not is_7mm(url) else ""  # 7mmtv มีคลิปตัวอย่างอื่นปนในหน้า
+                if media:
+                    return [("หน้าเว็บ", media, url)], spare
                 servers = get_servers(url, page, notify=note)
                 if not servers and not self.stopping:
                     self.events.put(("log", f"[#{item_id}] ยังไม่เจอ server ลองอ่านหน้าเว็บอีกรอบ"))
                     servers = get_servers(url, fetch_page(url) or page, notify=note)
                 for name, embed in servers:
                     if self.stopping:
-                        return -1
+                        break
                     post(DL, f"กำลังเช็ค server {name} ...")
-                    m, ref = resolve_embed(embed, url)
-                    if m:
-                        cands.append((name, m, ref))
+                    links, ref = resolve_embed_links(embed, url)
+                    if links:
+                        cands.append((name, links[0], ref))
+                        for n, alt in enumerate(links[1:3]):  # ลิงก์สำรองของ player ตัวเดียวกัน
+                            spare.append((f"{name} (สำรอง {n + 1})", alt, ref))
                     else:
                         self.events.put(("log", f"[#{item_id}] server {name}: หาลิงก์วิดีโอไม่เจอ"))
-            if not cands:
-                self.events.put(("log", f"[#{item_id}] หาลิงก์วิดีโอในหน้าเว็บไม่เจอ"))
-                return NO_MEDIA
-            if len(cands) > 1:
-                scored = []
-                for name, m, ref in cands:
-                    post(DL, f"กำลังเช็คความชัด server {name} ...")
-                    q = probe_quality(m, ref, opts.get("res", 0))
-                    self.events.put(("log", f"[#{item_id}] server {name}: " +
-                                     (f"{q[0]}p {q[1]:.0f}k" if q else "ใช้ไม่ได้")))
-                    if q:
-                        scored.append((q, name, m, ref))
-                scored.sort(key=lambda x: x[0], reverse=True)
-                cands = [(n, m, r) for _, n, m, r in scored] or cands
+                return cands, spare
+
             fname = None
             if title and not opts.get("stem"):
                 fname = pick_name(item_id, opts["out"], title, url,
                                   opts.get("name_max", NAME_MAX)).replace("%", "%%")
-            rc = -1
-            for name, m, ref in cands:
+            rc, cands = -1, []
+            # โฮสต์ของ CDN สุ่มใหม่ทุกครั้งที่เปิดหน้าเว็บ ถ้าชุดนี้ล่มทั้งหมด ขอชุดใหม่แล้วลองอีกรอบ
+            for rnd in range(2):
                 if self.stopping:
                     break
-                self.events.put(("log", f"[#{item_id}] โหลดจาก server {name}: {m}"))
-                origin = re.match(r"https?://[^/]+", ref).group(0)
-                extra = ["--impersonate", "chrome", "--referer", ref, "--add-headers", f"Origin:{origin}"]
-                # aria2c ปลอมตัวเป็น Chrome ไม่ได้ เลยใช้ตัวโหลดของ yt-dlp แทน
-                rc = attempt_lower(m, extra, (fname + ".%(ext)s") if fname else None, aria=False)[0]
-                if rc == 0:
-                    break
-                self.events.put(("log", f"[#{item_id}] server {name} โหลดไม่ผ่าน ลอง server ถัดไป"))
+                if rnd:
+                    self.events.put(("log", f"[#{item_id}] ลิงก์ชุดนี้ใช้ไม่ได้ทั้งหมด ขอลิงก์ชุดใหม่จากเว็บอีกรอบ"))
+                    post(DL, "ขอลิงก์ชุดใหม่ ...")
+                    page = fetch_page(url) or page
+                cands, spare = gather(page)
+                if not cands:
+                    continue
+                if len(cands) > 1:
+                    scored = []
+                    for name, m, ref in cands:
+                        post(DL, f"กำลังเช็คความชัด server {name} ...")
+                        q = probe_quality(m, ref, opts.get("res", 0))
+                        self.events.put(("log", f"[#{item_id}] server {name}: " +
+                                         (f"{q[0]}p {q[1]:.0f}k" if q else "ใช้ไม่ได้")))
+                        if q:
+                            scored.append((q, name, m, ref))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    cands = [(n, m, r) for _, n, m, r in scored] or cands
+                for name, m, ref in cands + spare:
+                    if self.stopping:
+                        break
+                    self.events.put(("log", f"[#{item_id}] โหลดจาก server {name}: {m}"))
+                    origin = re.match(r"https?://[^/]+", ref).group(0)
+                    extra = ["--impersonate", "chrome", "--referer", ref, "--add-headers", f"Origin:{origin}"]
+                    # aria2c ปลอมตัวเป็น Chrome ไม่ได้ เลยใช้ตัวโหลดของ yt-dlp แทน
+                    rc = attempt_lower(m, extra, (fname + ".%(ext)s") if fname else None, aria=False)[0]
+                    if rc == 0:
+                        return rc
+                    self.events.put(("log", f"[#{item_id}] server {name} โหลดไม่ผ่าน ลองลิงก์ถัดไป"))
+            if not cands:
+                self.events.put(("log", f"[#{item_id}] หาลิงก์วิดีโอในหน้าเว็บไม่เจอ"))
+                return NO_MEDIA
             return rc
 
         if is_page_site(url) or url_host(url) in NO_YTDLP_HOSTS:

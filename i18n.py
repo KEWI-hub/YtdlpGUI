@@ -204,6 +204,9 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "เซิร์ฟเวอร์ตอบช้ามาก": "Server is far too slow",
+    "ไฟล์หายจากเซิร์ฟเวอร์": "File is gone from the server",
+    "สำรอง": "spare",
     "ชิ้นไฟล์หาย (404) หลายรอบ สตรีมนี้น่าจะตายแล้ว ข้ามไปลอง server อื่น":
         "Fragments keep coming back 404, this stream looks dead - trying the next server",
     "เครื่องมือ": "Tools",
