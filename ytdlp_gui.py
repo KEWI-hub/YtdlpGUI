@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -185,7 +185,10 @@ def is_challenge(page):
     return "_cf_chl_opt" in page or any(t in title for t in CHALLENGE_TITLES)
 
 
-def fetch_page_simple(url, timeout=20):
+WEB_TIMEOUT = 60  # บาง server (เช่น recordplay.biz) ตอบช้าถึง ~20 วินาที ต้องรอนานพอ ไม่งั้นตัดทิ้งก่อนเจ้าตัวจะตอบ
+
+
+def fetch_page_simple(url, timeout=WEB_TIMEOUT):
     """ชั้น A: ปลอมตัวเป็น Chrome ด้วย curl_cffi ถ้าไม่มีค่อยใช้ urllib"""
     try:
         from curl_cffi import requests as cffi
@@ -224,7 +227,7 @@ def _chrome_ua(chrome):
 _ua_cache = {}
 
 
-def fetch_page_chrome(url, visible=False, timeout=30, js=None):
+def fetch_page_chrome(url, visible=False, timeout=60, js=None):
     """ชั้น C: เปิด Chrome จริง (profile แยกของแอป) อ่านหน้าเว็บผ่าน DevTools แล้วปิด"""
     import socket
     import websocket
@@ -305,7 +308,7 @@ def fetch_page_chrome(url, visible=False, timeout=30, js=None):
                        capture_output=True, creationflags=NO_WINDOW)
 
 
-def fetch_page(url, timeout=20, notify=None):
+def fetch_page(url, timeout=WEB_TIMEOUT, notify=None):
     """อ่านหน้าเว็บแบบหลายชั้น: A. curl_cffi -> C. Chrome แบบซ่อน -> C. Chrome แบบเปิดหน้าต่างให้กดยืนยันเอง"""
     page = fetch_page_simple(url, timeout)
     if page and not is_challenge(page):
@@ -317,7 +320,7 @@ def fetch_page(url, timeout=20, notify=None):
     with _chrome_lock:
         if notify:
             notify("โดน Cloudflare บล็อก กำลังเปิด Chrome แบบซ่อนเพื่อผ่าน ...")
-        page = fetch_page_chrome(url, visible=False, timeout=30)
+        page = fetch_page_chrome(url, visible=False, timeout=60)
         if page:
             return page
         if notify:
@@ -382,7 +385,7 @@ JS_7MM_SERVERS = r"""(function(){
 })()"""
 
 
-def fetch_with_referer(url, referer, timeout=20):
+def fetch_with_referer(url, referer, timeout=WEB_TIMEOUT):
     try:
         from curl_cffi import requests as cffi
         r = cffi.get(url, impersonate="chrome", headers={"Referer": referer}, timeout=timeout)
@@ -2086,7 +2089,7 @@ class App(tk.Tk):
                 "download:[P]%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
                 "|%(progress.downloaded_bytes)s",
                 # connection ที่เงียบเกิน 20 วิ ให้ตัดแล้วลองชิ้นนั้นใหม่ (ไม่งั้นค้างตลอดไปที่ 99.x%)
-                "--socket-timeout", "20"]
+                "--socket-timeout", str(WEB_TIMEOUT)]
         # "อัตโนมัติ" ปรับตามเว็บให้เอง: YouTube เอาชัดสุดเสมอ (คลิปยาวไฟล์ใหญ่ก็ยอม)
         # เว็บอื่นจำกัดที่ 1080p (ถ้าไม่มีจะได้ 720p) เพราะสูงกว่านั้นมักเป็นไฟล์อัปสเกลที่ใหญ่เกินจำเป็น
         auto = opts["format"] == FORMATS[AUTO_FMT]
