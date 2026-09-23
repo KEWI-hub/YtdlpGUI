@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -39,6 +39,9 @@ FORMATS = {
     "MP4 ตรง (ไม่ใช้ m3u8)": ["-f", "b[ext=mp4][protocol^=http]/b[ext=mp4]/bv*+ba/b", "--merge-output-format", "mp4"],
     "ดีที่สุด (แยกภาพ+เสียง แล้วรวม)": ["-f", "bv*+ba/b", "--merge-output-format", "mp4"],
 }
+AUTO_FMT = "อัตโนมัติ (เลือกที่ดีที่สุดให้)"
+BEST_FMT = "ดีที่สุด (แยกภาพ+เสียง แล้วรวม)"
+AUTO_RES = 1080  # "อัตโนมัติ" + ความชัด "สูงสุด" = จำกัดที่ 1080p (ไม่มีก็เอา 720p) ยกเว้น YouTube ที่เอาชัดสุดเสมอ
 RESOLUTIONS = {"สูงสุด": 0, "1080p": 1080, "720p": 720}  # 0 = ไม่จำกัด
 BROWSERS = ["ไม่ใช้", "firefox", "chrome", "edge", "brave", "opera"]
 PRESETS = ["ultrafast", "veryfast", "fast", "medium", "slow", "slower"]
@@ -138,6 +141,10 @@ NO_YTDLP_HOSTS = set()  # เว็บที่ yt-dlp บอกว่าไม�
 def url_host(url):
     m = re.match(r"https?://(?:www\.|m\.)?([^/?#]+)", url or "", re.I)
     return m.group(1).lower() if m else ""
+
+
+def is_youtube(url):
+    return bool(re.search(r"^https?://(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", url or "", re.I))
 
 
 def is_page_site(url):
@@ -1968,6 +1975,14 @@ class App(tk.Tk):
                 "|%(progress.downloaded_bytes)s",
                 # connection ที่เงียบเกิน 20 วิ ให้ตัดแล้วลองชิ้นนั้นใหม่ (ไม่งั้นค้างตลอดไปที่ 99.x%)
                 "--socket-timeout", "20"]
+        # "อัตโนมัติ" ปรับตามเว็บให้เอง: YouTube เอาชัดสุดเสมอ (คลิปยาวไฟล์ใหญ่ก็ยอม)
+        # เว็บอื่นจำกัดที่ 1080p (ถ้าไม่มีจะได้ 720p) เพราะสูงกว่านั้นมักเป็นไฟล์อัปสเกลที่ใหญ่เกินจำเป็น
+        auto = opts["format"] == FORMATS[AUTO_FMT]
+        res = opts.get("res") or 0
+        if auto and is_youtube(url):
+            opts = dict(opts, format=FORMATS[BEST_FMT])  # ความชัดตามที่ผู้ใช้ตั้ง ("สูงสุด" = ไม่จำกัด)
+        elif auto and not res:
+            res = AUTO_RES
         fmt = list(opts["format"])
         if opts.get("exclude"):
             # ตัดไฟล์ที่เพิ่งโหลดไม่ผ่านออก ให้ yt-dlp เลือกตัวที่ดีรองลงมา
@@ -1982,14 +1997,14 @@ class App(tk.Tk):
         # ห้ามข้ามชิ้นที่โหลดไม่ได้ (ไม่งั้นได้วิดีโอที่ขาดเป็นช่วงๆ) โดน 429 ให้รอนานขึ้นเรื่อยๆ แล้วลองใหม่
         args += ["--abort-on-unavailable-fragments", "--fragment-retries", "30",
                  "--retry-sleep", "fragment:exp=1:30", "--retries", "10"]
-        if opts.get("res"):
+        if res:
             # เลือกตัวที่ชัดที่สุดที่ไม่เกินที่ตั้งไว้ ถ้าไม่มีจะเอาตัวที่ใกล้ที่สุดแทน (ไม่ error)
             # ถ้ารูปแบบที่เลือกมี -S ของตัวเองอยู่แล้ว ต้องเอาข้อจำกัดความชัดไปไว้หน้าสุดของอันนั้น
             if "-S" in args:
                 i = args.index("-S") + 1
-                args[i] = f"res:{opts['res']}," + args[i]
+                args[i] = f"res:{res}," + args[i]
             else:
-                args += ["-S", f"res:{opts['res']}"]
+                args += ["-S", f"res:{res}"]
         if opts["aria2c"] and aria:
             args += ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 16 -s 16 -k 1M"]
         # เว็บสตรีม (m3u8) จำกัดความเร็วต่อ connection ยิ่งโหลดหลายชิ้นพร้อมกันยิ่งเร็ว
