@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -88,6 +88,7 @@ WAIT, DL, WAIT_CONV, CONV, DONE, FAIL, STOPPED, HAVE = (
     "รอ", "กำลังโหลด", "รอแปลง", "กำลังแปลง", "เสร็จ", "ล้มเหลว", "หยุด", "มีแล้ว")
 
 PROG_RE = re.compile(r"^\[P\]\s*([\d.]+)%\|(.*?)\|(.*?)(?:\|(\S*))?$")
+DEAD_FRAGS = 8  # เจอ "ชิ้นไฟล์หาย 404" กี่ครั้งถึงจะเลิกรอแล้วเปลี่ยน server
 STALL_SEC = 90       # ขนาดไฟล์ไม่เพิ่มเลยนานเท่านี้ = ค้าง ให้ตัดแล้วโหลดต่อจากเดิม
 STALL_RETRIES = 5    # โหลดต่อจากที่ค้างได้กี่ครั้งต่อคลิป
 DUR_RE = re.compile(r"Duration: (\d+):(\d+):([\d.]+)")
@@ -343,6 +344,13 @@ AD_HOSTS = re.compile(r"realsrv|whitetrafsa|labadena|tapioni|dtscout|exoclick|ju
                       r"doubleclick|googlesyndication|adsterra|popads|cloudflareinsights", re.I)
 IFRAME_RE = re.compile(r"""<iframe[^>]+src=["']([^"']+)""", re.I)
 # 7mmtv: กดปุ่มเลือก server ทุกปุ่มด้วย JavaScript ของเว็บเอง แล้วอ่าน iframe ของแต่ละ server
+# รอจนหน้า player ตัวจริงโหลดเสร็จ (มีลิงก์วิดีโออยู่ในหน้า) แล้วส่งทั้ง URL และ HTML กลับมา
+JS_EMBED_PAGE = r"""(function(){
+  var h = document.documentElement.outerHTML;
+  if (!/m3u8|\.mp4|links\s*=/.test(h)) return '';
+  return JSON.stringify({u: location.href, h: h});
+})()"""
+
 JS_7MM_SERVERS = r"""(function(){
   var btns=[...document.querySelectorAll('.btn-server')].map(b=>b.textContent.trim());
   if(!btns.length || typeof window['jfun_show_'+btns[0]]!=='function') return '';
@@ -375,6 +383,18 @@ def resolve_embed(embed, referer, depth=0):
     media = find_media(page, embed)
     if media:
         return media, embed
+    if page and len(page) < 4000 and not IFRAME_RE.search(page) and find_chrome():
+        # หน้าเปล่าๆ ที่ขึ้นว่า "Loading..." = ตัวเว็บใช้ JavaScript พาไปหน้า player จริง ให้ Chrome รันให้
+        with _chrome_lock:
+            raw = fetch_page_chrome(embed, visible=False, timeout=40, js=JS_EMBED_PAGE)
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            data = None
+        if data and data.get("h"):
+            media = find_media(data["h"], data.get("u") or embed)
+            if media:
+                return media, data.get("u") or embed
     if depth < 2:
         for f in IFRAME_RE.findall(page):
             if f.startswith("//"):
@@ -2138,7 +2158,7 @@ class App(tk.Tk):
             args = self.build_args(target, o, pathfile, extra, outtmpl, aria)
             self.events.put(("log", f"[#{item_id}] > " + subprocess.list2cmdline(args[1:])))
             out = []
-            st = {"t": time.time(), "bytes": None, "active": False, "stalled": False}
+            st = {"t": time.time(), "bytes": None, "active": False, "stalled": False, "gone": 0}
 
             def on_line(line):
                 m = PROG_RE.match(line.strip())
@@ -2150,6 +2170,17 @@ class App(tk.Tk):
                     post(DL, f"{float(pct):.1f}%  {spd.strip()}  ETA {eta.strip()}")
                     return
                 st["active"] = False  # ช่วงรวมไฟล์/แก้ไฟล์ไม่มี progress ไม่นับว่าค้าง
+                if "Retrying fragment" in line and ("404" in line or "410" in line):
+                    st["gone"] += 1
+                    if st["gone"] == DEAD_FRAGS:
+                        # ชิ้นไฟล์หายจริงๆ รอไปก็ไม่มา ตัดเลยแล้วไปลอง server อื่น
+                        self.events.put(("log", f"[#{item_id}] ชิ้นไฟล์หาย (404) หลายรอบ "
+                                                f"สตรีมนี้น่าจะตายแล้ว ข้ามไปลอง server อื่น"))
+                        with self.procs_lock:
+                            pr = self.procs.get(("dl", item_id))
+                        if pr and pr.poll() is None:
+                            subprocess.run(["taskkill", "/PID", str(pr.pid), "/T", "/F"],
+                                           capture_output=True, creationflags=NO_WINDOW)
                 out.append(line)
                 self.events.put(("log", f"[#{item_id}] {line}"))
                 if "[Merger]" in line:
@@ -2271,18 +2302,20 @@ class App(tk.Tk):
                 self.events.put(("log", f"[#{item_id}] server {name} โหลดไม่ผ่าน ลอง server ถัดไป"))
             return rc
 
-        if is_page_site(url):
+        if is_page_site(url) or url_host(url) in NO_YTDLP_HOSTS:
             rc = via_page()
         else:
             rc, out = attempt_lower(url)
             if rc != 0 and not self.stopping:
                 if "Unsupported URL" in out:
+                    NO_YTDLP_HOSTS.add(url_host(url))
                     rc = via_page()
                 elif "impersonat" in out:
                     self.events.put(("log", f"[#{item_id}] โดน Cloudflare ลองใหม่แบบปลอมตัวเป็น Chrome"))
                     rc, out = attempt_lower(url, ["--impersonate", "chrome"], aria=False)
                     if rc != 0 and not self.stopping:
                         self.events.put(("log", f"[#{item_id}] yt-dlp อ่านเว็บนี้ไม่ได้ ลองอ่านหน้าเว็บเอง"))
+                        NO_YTDLP_HOSTS.add(url_host(url))
                         rc = via_page()
         files = []
         try:

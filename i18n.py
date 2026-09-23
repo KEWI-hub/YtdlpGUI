@@ -204,6 +204,8 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "ชิ้นไฟล์หาย (404) หลายรอบ สตรีมนี้น่าจะตายแล้ว ข้ามไปลอง server อื่น":
+        "Fragments keep coming back 404, this stream looks dead - trying the next server",
     "เครื่องมือ": "Tools",
     "ล้างประวัติไฟล์ที่โหลด (sources.json)": "Clear download history (sources.json)",
     "ล้างประวัติไฟล์ที่โหลด": "Clear download history of",
