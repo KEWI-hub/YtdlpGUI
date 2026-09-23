@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.9"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -34,6 +34,8 @@ QUEUE_FILE = os.path.join(APP_DIR, "queue.json")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 FORMATS = {
+    "อัตโนมัติ (เลือกที่ดีที่สุดให้)":
+        ["-f", "bv*+ba/b", "--merge-output-format", "mp4", "-S", "proto:https,res,fps,br,ext:mp4:m4a"],
     "MP4 ตรง (ไม่ใช้ m3u8)": ["-f", "b[ext=mp4][protocol^=http]/b[ext=mp4]/bv*+ba/b", "--merge-output-format", "mp4"],
     "ดีที่สุด (แยกภาพ+เสียง แล้วรวม)": ["-f", "bv*+ba/b", "--merge-output-format", "mp4"],
 }
@@ -61,7 +63,7 @@ NAME_MAX = 70  # ความยาวชื่อไฟล์สูงสุด
 
 DEFAULTS = {
     "out_dir": os.path.join(APP_DIR, "PH"),
-    "format": "MP4 ตรง (ไม่ใช้ m3u8)",
+    "format": "อัตโนมัติ (เลือกที่ดีที่สุดให้)",
     "crf": 24,
     "preset": "slow",
     "container": "mp4",
@@ -1982,7 +1984,12 @@ class App(tk.Tk):
                  "--retry-sleep", "fragment:exp=1:30", "--retries", "10"]
         if opts.get("res"):
             # เลือกตัวที่ชัดที่สุดที่ไม่เกินที่ตั้งไว้ ถ้าไม่มีจะเอาตัวที่ใกล้ที่สุดแทน (ไม่ error)
-            args += ["-S", f"res:{opts['res']}"]
+            # ถ้ารูปแบบที่เลือกมี -S ของตัวเองอยู่แล้ว ต้องเอาข้อจำกัดความชัดไปไว้หน้าสุดของอันนั้น
+            if "-S" in args:
+                i = args.index("-S") + 1
+                args[i] = f"res:{opts['res']}," + args[i]
+            else:
+                args += ["-S", f"res:{opts['res']}"]
         if opts["aria2c"] and aria:
             args += ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 16 -s 16 -k 1M"]
         # เว็บสตรีม (m3u8) จำกัดความเร็วต่อ connection ยิ่งโหลดหลายชิ้นพร้อมกันยิ่งเร็ว

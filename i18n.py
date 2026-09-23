@@ -35,6 +35,7 @@ EN = {
     "เลือก": "Browse",
     "รูปแบบ": "Format",
     "ตรง (ไม่ใช้ m3u8)": "direct (no m3u8)",
+    "อัตโนมัติ (เลือกที่ดีที่สุดให้)": "Automatic (pick the best)",
     "ดีที่สุด (แยกภาพ": "Best (video",
     "เสียง แล้วรวม)": "audio, merged)",
     "ความชัด": "Resolution",
