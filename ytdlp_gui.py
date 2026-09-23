@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.7"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.8"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -825,6 +825,23 @@ def find_existing(folder, title, url=""):
         # yt-dlp ตัดชื่อยาวให้สั้นลง เลยยอมให้ขึ้นต้นตรงกันถ้ายาวพอ
         if ns and (ns == nt or (min(len(ns), len(nt)) >= 30 and (ns.startswith(nt) or nt.startswith(ns)))):
             return os.path.join(folder, n)
+    return ""
+
+
+def find_moved_url(url):
+    """หน้าคลิปขึ้น 404 เพราะเว็บย้ายวันที่ใน URL (ลงคลิปเดิมใหม่) ลองค้นชื่อคลิปในเว็บนั้นเพื่อหา URL ใหม่"""
+    m = re.match(r"(https?://[^/]+)/\d{4}/\d{2}/\d{2}/([^/?#]+)/?$", url)
+    if not m:
+        return ""
+    root, slug = m.group(1), m.group(2)
+    page = fetch_page(f"{root}/?s={urllib.parse.quote(slug)}")
+    if not page:
+        return ""
+    same = re.compile(rf"{re.escape(root)}/\d{{4}}/\d{{2}}/\d{{2}}/{re.escape(slug)}/?$", re.I)
+    for link in dict.fromkeys(re.findall(r'https?://[^\s"\'<>]+', page)):
+        link = link.rstrip('"\'')
+        if same.match(link) and link.rstrip("/") != url.rstrip("/"):
+            return link
     return ""
 
 
@@ -2271,10 +2288,17 @@ class App(tk.Tk):
             เลือก server ที่ชัดที่สุดก่อน ถ้าโหลดไม่ผ่านค่อยเปลี่ยน server ถัดไป"""
             note = lambda m: (self.events.put(("notice", f"[#{item_id}] {m}")), post(DL, m.split(" ...")[0] + " ..."))
             post(DL, "กำลังหาลิงก์วิดีโอในหน้าเว็บ ...")
-            page = fetch_page(url, notify=lambda m: note("กำลังผ่าน Cloudflare ..."))
+            cur = url  # ลิงก์ที่ใช้จริง (เว็บอาจย้ายวันที่ใน URL ไปแล้ว)
+            page = fetch_page(cur, notify=lambda m: note("กำลังผ่าน Cloudflare ..."))
             if page and GONE_TITLE_RE.search(page_title(page) or ""):
-                self.events.put(("log", f"[#{item_id}] หน้าคลิปนี้ไม่มีบนเว็บแล้ว (404)"))
-                return PAGE_GONE
+                post(DL, "หน้าคลิปย้ายที่ กำลังค้นหาใหม่ ...")
+                moved = find_moved_url(cur)
+                if moved:
+                    self.events.put(("log", f"[#{item_id}] หน้าคลิปย้ายไปที่ {moved} โหลดจากที่ใหม่"))
+                    cur, page = moved, fetch_page(moved)
+                if not page or GONE_TITLE_RE.search(page_title(page) or ""):
+                    self.events.put(("log", f"[#{item_id}] หน้าคลิปนี้ไม่มีบนเว็บแล้ว (404)"))
+                    return PAGE_GONE
             title = opts.get("name") or page_title(page)
             if title and not opts.get("name"):
                 self.events.put(("title", item_id, title))
@@ -2287,19 +2311,19 @@ class App(tk.Tk):
             def gather(page):
                 """หาลิงก์วิดีโอจากหน้านี้ คืน (ตัวหลักของแต่ละ server, ลิงก์สำรองของ player เดียวกัน)"""
                 cands, spare = [], []
-                media = find_media(page) if not is_7mm(url) else ""  # 7mmtv มีคลิปตัวอย่างอื่นปนในหน้า
+                media = find_media(page) if not is_7mm(cur) else ""  # 7mmtv มีคลิปตัวอย่างอื่นปนในหน้า
                 if media:
-                    return [("หน้าเว็บ", media, url)], spare
-                servers = get_servers(url, page, notify=note)
+                    return [("หน้าเว็บ", media, cur)], spare
+                servers = get_servers(cur, page, notify=note)
                 if not servers and not self.stopping:
                     self.events.put(("log", f"[#{item_id}] ยังไม่เจอ server ลองอ่านหน้าเว็บอีกรอบ"))
-                    servers = get_servers(url, fetch_page(url) or page, notify=note)
+                    servers = get_servers(cur, fetch_page(cur) or page, notify=note)
                 for name, embed in servers:
                     if self.stopping:
                         break
                     post(DL, f"กำลังเช็ค server {name} ...")
-                    links, ref, dead = resolve_embed_links(embed, url)
-                    if not links and not dead and not fetch_with_referer(embed, url):
+                    links, ref, dead = resolve_embed_links(embed, cur)
+                    if not links and not dead and not fetch_with_referer(embed, cur):
                         self.events.put(("log", f"[#{item_id}] server {name}: หน้า player ไม่ตอบอะไรเลย"))
                     if dead:
                         self.events.put(("log", f"[#{item_id}] server {name}: เว็บบอกว่าคลิปนี้ถูกลบ"
@@ -2325,7 +2349,7 @@ class App(tk.Tk):
                 if rnd:
                     self.events.put(("log", f"[#{item_id}] ลิงก์ชุดนี้ใช้ไม่ได้ทั้งหมด ขอลิงก์ชุดใหม่จากเว็บอีกรอบ"))
                     post(DL, "ขอลิงก์ชุดใหม่ ...")
-                    page = fetch_page(url) or page
+                    page = fetch_page(cur) or page
                 cands, spare = gather(page)
                 if not cands:
                     if gone[0]:
