@@ -204,6 +204,8 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "เว็บลบคลิปนี้ไปแล้ว": "The site has deleted this clip",
+    "เว็บบอกว่าคลิปนี้ถูกลบหรือหมดอายุไปแล้ว": "the site says this clip was deleted or expired",
     "เซิร์ฟเวอร์ตอบช้ามาก": "Server is far too slow",
     "ไฟล์หายจากเซิร์ฟเวอร์": "File is gone from the server",
     "สำรอง": "spare",

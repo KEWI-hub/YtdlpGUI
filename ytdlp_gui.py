@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.5"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.6"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -347,9 +347,13 @@ IFRAME_RE = re.compile(r"""<iframe[^>]+src=["']([^"']+)""", re.I)
 # รอจนหน้า player ตัวจริงโหลดเสร็จ (มีลิงก์วิดีโออยู่ในหน้า) แล้วส่งทั้ง URL และ HTML กลับมา
 JS_EMBED_PAGE = r"""(function(){
   var h = document.documentElement.outerHTML;
-  if (!/m3u8|\.mp4|links\s*=/.test(h)) return '';
+  var dead = /no longer available|has been deleted|file was deleted|File not found/i.test(h);
+  if (!dead && !/m3u8|\.mp4|links\s*=/.test(h)) return '';
   return JSON.stringify({u: location.href, h: h});
 })()"""
+
+# ข้อความที่ player ขึ้นเมื่อคลิปถูกลบหรือหมดอายุไปแล้ว
+DEAD_RE = re.compile(r"no longer available|has been deleted|file was deleted|file not found", re.I)
 
 JS_7MM_SERVERS = r"""(function(){
   var btns=[...document.querySelectorAll('.btn-server')].map(b=>b.textContent.trim());
@@ -376,19 +380,21 @@ def fetch_with_referer(url, referer, timeout=20):
 
 def resolve_embed(embed, referer, depth=0):
     """คืนค่า (ลิงก์วิดีโอตัวที่ควรใช้, หน้าที่ใช้เป็น referer)"""
-    links, ref = resolve_embed_links(embed, referer, depth)
+    links, ref, _ = resolve_embed_links(embed, referer, depth)
     return (links[0] if links else ""), ref
 
 
 def resolve_embed_links(embed, referer, depth=0):
     """เปิดหน้า player ของแต่ละ server หาลิงก์ m3u8/mp4 ถ้าไม่เจอให้ตาม iframe ที่ซ้อนอยู่ข้างในอีกชั้น
-    คืนค่า ([ลิงก์วิดีโอ เรียงตัวที่ควรใช้ก่อน], หน้าที่ใช้เป็น referer)"""
+    คืนค่า ([ลิงก์วิดีโอ เรียงตัวที่ควรใช้ก่อน], หน้าที่ใช้เป็น referer, คลิปถูกลบไปแล้วหรือไม่)"""
     if embed.startswith("//"):
         embed = "https:" + embed
     page = fetch_with_referer(embed, referer)
     media = find_media_all(page, embed)
     if media:
-        return media, embed
+        return media, embed, False
+    if page and DEAD_RE.search(page):
+        return [], embed, True
     if page and len(page) < 4000 and not IFRAME_RE.search(page) and find_chrome():
         # หน้าเปล่าๆ ที่ขึ้นว่า "Loading..." = ตัวเว็บใช้ JavaScript พาไปหน้า player จริง ให้ Chrome รันให้
         with _chrome_lock:
@@ -400,16 +406,18 @@ def resolve_embed_links(embed, referer, depth=0):
         if data and data.get("h"):
             media = find_media_all(data["h"], data.get("u") or embed)
             if media:
-                return media, data.get("u") or embed
+                return media, data.get("u") or embed, False
+            if DEAD_RE.search(data["h"]):
+                return [], data.get("u") or embed, True
     if depth < 2:
         for f in IFRAME_RE.findall(page):
             if f.startswith("//"):
                 f = "https:" + f
             if f.startswith("http") and not AD_HOSTS.search(f):
-                media, ref = resolve_embed_links(f, embed, depth + 1)
-                if media:
-                    return media, ref
-    return [], ""
+                media, ref, dead = resolve_embed_links(f, embed, depth + 1)
+                if media or dead:
+                    return media, ref, dead
+    return [], "", False
 
 
 def get_servers(url, page, notify=None):
@@ -819,6 +827,7 @@ def find_existing(folder, title, url=""):
 
 
 NO_MEDIA = -2  # หาลิงก์วิดีโอไม่เจอ
+DEAD_CLIP = -3  # เว็บบอกเองว่าคลิปถูกลบหรือหมดอายุแล้ว
 
 
 def fail_reason(out):
@@ -2267,6 +2276,8 @@ class App(tk.Tk):
                 if f:
                     self.events.put(("log", f"[#{item_id}] มีไฟล์อยู่แล้ว ไม่โหลดซ้ำ: {f}"))
                     return "have:" + f
+            gone = [False]  # เว็บบอกเองว่าคลิปถูกลบ ไม่ต้องลองซ้ำ
+
             def gather(page):
                 """หาลิงก์วิดีโอจากหน้านี้ คืน (ตัวหลักของแต่ละ server, ลิงก์สำรองของ player เดียวกัน)"""
                 cands, spare = [], []
@@ -2281,7 +2292,11 @@ class App(tk.Tk):
                     if self.stopping:
                         break
                     post(DL, f"กำลังเช็ค server {name} ...")
-                    links, ref = resolve_embed_links(embed, url)
+                    links, ref, dead = resolve_embed_links(embed, url)
+                    if dead:
+                        self.events.put(("log", f"[#{item_id}] server {name}: เว็บบอกว่าคลิปนี้ถูกลบ"
+                                                f"หรือหมดอายุไปแล้ว"))
+                        gone[0] = True
                     if links:
                         cands.append((name, links[0], ref))
                         for n, alt in enumerate(links[1:3]):  # ลิงก์สำรองของ player ตัวเดียวกัน
@@ -2305,6 +2320,8 @@ class App(tk.Tk):
                     page = fetch_page(url) or page
                 cands, spare = gather(page)
                 if not cands:
+                    if gone[0]:
+                        break
                     continue
                 if len(cands) > 1:
                     scored = []
@@ -2329,6 +2346,8 @@ class App(tk.Tk):
                         return rc
                     self.events.put(("log", f"[#{item_id}] server {name} โหลดไม่ผ่าน ลองลิงก์ถัดไป"))
             if not cands:
+                if gone[0]:
+                    return DEAD_CLIP
                 self.events.put(("log", f"[#{item_id}] หาลิงก์วิดีโอในหน้าเว็บไม่เจอ"))
                 return NO_MEDIA
             return rc
@@ -2359,7 +2378,8 @@ class App(tk.Tk):
         if isinstance(rc, str) and rc.startswith("have:"):
             self.events.put(("have", item_id, rc[5:]))
             return
-        reason = "หาลิงก์วิดีโอไม่เจอ" if rc == NO_MEDIA else fail_reason(last["out"])
+        reason = {NO_MEDIA: "หาลิงก์วิดีโอไม่เจอ",
+                  DEAD_CLIP: "เว็บลบคลิปนี้ไปแล้ว"}.get(rc) or fail_reason(last["out"])
         self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
 
     def _convert_job(self, item_id, src, opts):
