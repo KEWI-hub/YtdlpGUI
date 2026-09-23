@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.6"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.7"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -354,6 +354,8 @@ JS_EMBED_PAGE = r"""(function(){
 
 # ข้อความที่ player ขึ้นเมื่อคลิปถูกลบหรือหมดอายุไปแล้ว
 DEAD_RE = re.compile(r"no longer available|has been deleted|file was deleted|file not found", re.I)
+# ชื่อหน้าเว็บที่บอกว่าหน้านี้ไม่มีแล้ว (ลิงก์ในหน้ารวมบางอันชี้ไปหน้าที่ถูกลบ)
+GONE_TITLE_RE = re.compile(r"page not found|404 not found|not found\s*[-–|]|ไม่พบหน้า", re.I)
 
 JS_7MM_SERVERS = r"""(function(){
   var btns=[...document.querySelectorAll('.btn-server')].map(b=>b.textContent.trim());
@@ -828,6 +830,7 @@ def find_existing(folder, title, url=""):
 
 NO_MEDIA = -2  # หาลิงก์วิดีโอไม่เจอ
 DEAD_CLIP = -3  # เว็บบอกเองว่าคลิปถูกลบหรือหมดอายุแล้ว
+PAGE_GONE = -4  # หน้าคลิปบนเว็บถูกลบไปแล้ว (404)
 
 
 def fail_reason(out):
@@ -2269,6 +2272,9 @@ class App(tk.Tk):
             note = lambda m: (self.events.put(("notice", f"[#{item_id}] {m}")), post(DL, m.split(" ...")[0] + " ..."))
             post(DL, "กำลังหาลิงก์วิดีโอในหน้าเว็บ ...")
             page = fetch_page(url, notify=lambda m: note("กำลังผ่าน Cloudflare ..."))
+            if page and GONE_TITLE_RE.search(page_title(page) or ""):
+                self.events.put(("log", f"[#{item_id}] หน้าคลิปนี้ไม่มีบนเว็บแล้ว (404)"))
+                return PAGE_GONE
             title = opts.get("name") or page_title(page)
             if title and not opts.get("name"):
                 self.events.put(("title", item_id, title))
@@ -2293,6 +2299,8 @@ class App(tk.Tk):
                         break
                     post(DL, f"กำลังเช็ค server {name} ...")
                     links, ref, dead = resolve_embed_links(embed, url)
+                    if not links and not dead and not fetch_with_referer(embed, url):
+                        self.events.put(("log", f"[#{item_id}] server {name}: หน้า player ไม่ตอบอะไรเลย"))
                     if dead:
                         self.events.put(("log", f"[#{item_id}] server {name}: เว็บบอกว่าคลิปนี้ถูกลบ"
                                                 f"หรือหมดอายุไปแล้ว"))
@@ -2379,7 +2387,8 @@ class App(tk.Tk):
             self.events.put(("have", item_id, rc[5:]))
             return
         reason = {NO_MEDIA: "หาลิงก์วิดีโอไม่เจอ",
-                  DEAD_CLIP: "เว็บลบคลิปนี้ไปแล้ว"}.get(rc) or fail_reason(last["out"])
+                  DEAD_CLIP: "เว็บลบคลิปนี้ไปแล้ว",
+                  PAGE_GONE: "หน้าคลิปนี้ไม่มีบนเว็บแล้ว"}.get(rc) or fail_reason(last["out"])
         self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
 
     def _convert_job(self, item_id, src, opts):
