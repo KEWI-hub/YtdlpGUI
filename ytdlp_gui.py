@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.3.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.3.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -1415,7 +1415,23 @@ class App(tk.Tk):
             lang.add_radiobutton(label=name, value=code, variable=self.var_lang,
                                  command=lambda c=code: self.change_language(c))
         bar.add_cascade(label="Language / ภาษา", menu=lang)
+        tools = tk.Menu(bar, tearoff=0)
+        tools.add_command(label=tr("ล้างประวัติไฟล์ที่โหลด (sources.json)"), command=self.clear_sources)
+        bar.add_cascade(label=tr("เครื่องมือ"), menu=tools)
         self.config(menu=bar)
+
+    def clear_sources(self):
+        """ลืมว่าไฟล์ไหนโหลดมาจากลิงก์ไหน (ไฟล์วิดีโอไม่ถูกลบ) หลังล้างแล้วไฟล์เดิมที่ชื่อตรงกันจะนับว่า "มีแล้ว" ตามชื่อ"""
+        n = len(SOURCES)
+        if not messagebox.askyesno(APP_NAME, tr(f"ล้างประวัติไฟล์ที่โหลด {n} รายการ ไฟล์วิดีโอไม่ถูกลบ") + "?"):
+            return
+        SOURCES.clear()
+        try:
+            os.remove(SOURCES_FILE)
+        except OSError:
+            pass
+        self.write_log(f"ล้างประวัติไฟล์ที่โหลดแล้ว {n} รายการ")
+        self.var_status.set(tr("ล้างประวัติไฟล์ที่โหลดแล้ว"))
 
     def change_language(self, code):
         """เปลี่ยนภาษาแล้วเปิดแอปใหม่ (คิวและค่าที่ตั้งไว้ยังอยู่)"""

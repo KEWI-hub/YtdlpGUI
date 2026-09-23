@@ -204,6 +204,12 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "เครื่องมือ": "Tools",
+    "ล้างประวัติไฟล์ที่โหลด (sources.json)": "Clear download history (sources.json)",
+    "ล้างประวัติไฟล์ที่โหลด": "Clear download history of",
+    "ไฟล์วิดีโอไม่ถูกลบ": "video files are not deleted",
+    "ล้างประวัติไฟล์ที่โหลดแล้ว": "Download history cleared",
+    "รายการ": "items",
     # --- ภาษา ---
     "ภาษา": "Language",
     "เปลี่ยนภาษาแล้ว แอปจะเปิดใหม่": "Language changed, the app will restart",
