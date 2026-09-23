@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.2.8"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.2.9"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -128,6 +128,14 @@ def is_missav(url):
 
 def is_7mm(url):
     return re.match(r"https?://(?:[\w-]+\.)*7mm[\w-]*\.", url, re.I) is not None
+
+
+NO_YTDLP_HOSTS = set()  # เว็บที่ yt-dlp บอกว่าไม่รองรับ (จำไว้ ครั้งต่อไปอ่านหน้าเว็บเลย)
+
+
+def url_host(url):
+    m = re.match(r"https?://(?:www\.|m\.)?([^/?#]+)", url or "", re.I)
+    return m.group(1).lower() if m else ""
 
 
 def is_page_site(url):
@@ -1809,27 +1817,38 @@ class App(tk.Tk):
     def _title_worker(self):
         while True:
             item_id, url, cookies = self.title_queue.get()
-            title = ""
-            if not is_page_site(url):
-                lines = []
-                try:
-                    # %(title)j = ส่งเป็น JSON ไม่งั้นตัวอักษรไทยหายตอนส่งผ่าน pipe
-                    args = [YTDLP, "--skip-download", "--no-warnings", "--no-playlist", "--encoding", "utf-8",
-                            "--js-runtimes", "deno", "--print", "%(title)j", *cookies, url]
-                    self._run_proc(args, lines.append)
-                except OSError:
-                    pass
-                for l in lines:
-                    l = l.strip()
-                    if l.startswith('"'):
-                        try:
-                            title = json.loads(l).strip()
-                            break
-                        except ValueError:
-                            pass
-            if not title:
-                title = page_title(fetch_page(url, notify=lambda m: self.events.put(("notice", m))))
+            try:
+                title = self._fetch_title(url, cookies)
+            except Exception as e:  # ห้ามตาย ไม่งั้นแถวนี้ค้างอยู่ที่ "กำลังดึงชื่อ" ตลอดไป
+                self.events.put(("log", f"ดึงชื่อไม่ได้: {e}"))
+                title = ""
             self.events.put(("title", item_id, title))
+
+    def _fetch_title(self, url, cookies):
+        title = ""
+        if not is_page_site(url) and url_host(url) not in NO_YTDLP_HOSTS:
+            lines = []
+            try:
+                # %(title)j = ส่งเป็น JSON ไม่งั้นตัวอักษรไทยหายตอนส่งผ่าน pipe
+                args = [YTDLP, "--skip-download", "--no-warnings", "--no-playlist", "--encoding", "utf-8",
+                        "--js-runtimes", "deno", "--print", "%(title)j", *cookies, url]
+                self._run_proc(args, lines.append)
+            except OSError:
+                pass
+            for l in lines:
+                l = l.strip()
+                if l.startswith('"'):
+                    try:
+                        title = json.loads(l).strip()
+                        break
+                    except ValueError:
+                        pass
+                elif "Unsupported URL" in l:
+                    NO_YTDLP_HOSTS.add(url_host(url))
+                    self.events.put(("log", f"yt-dlp ไม่รองรับ {url_host(url)} ต่อไปจะอ่านหน้าเว็บเอาชื่อเลย"))
+        if not title:
+            title = page_title(fetch_page(url, notify=lambda m: self.events.put(("notice", m))))
+        return title
 
     def check_app_update(self):
         """เช็คเวอร์ชันแอปกับ GitHub Releases ถ้ามีใหม่กว่า โหลดมาเตรียมไว้แล้วติดตั้งให้เอง"""
@@ -2002,9 +2021,9 @@ class App(tk.Tk):
                 if it["status"] == WAIT and self._check_existing(it):
                     continue
                 if it["status"] == WAIT and it["progress"] == "กำลังดึงชื่อ ...":
-                    # รอชื่อก่อน จะได้ตั้งชื่อไฟล์ไม่ให้ชนกับคลิปอื่นที่ชื่อเหมือนกัน (รอนานสุด 90 วิ)
-                    if time.time() - it.setdefault("wait_t", time.time()) < 90:
-                        continue
+                    # รอจนกว่าจะได้ชื่อ (หรือดึงไม่ได้) จะได้ตั้งชื่อไฟล์ไม่ให้ชนกับคลิปอื่นที่ชื่อเหมือนกัน
+                    # ตัวดึงชื่อส่งผลกลับมาเสมอ ไม่ว่าสำเร็จหรือไม่ แถวนี้เลยไม่ค้างตลอดไป
+                    continue
                 if it["status"] == WAIT:
                     it["status"], it["progress"] = DL, "เริ่ม ..."
                     self._refresh(it)
