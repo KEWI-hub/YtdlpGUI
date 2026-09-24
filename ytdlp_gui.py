@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -109,7 +109,7 @@ AUTO_RETRY_MAX = 3   # จบคิวแล้วลองคลิปที่
 AUTO_RETRY_WAIT = 120  # รอกี่วินาทีก่อนเริ่มรอบลองใหม่ (ให้ server มีเวลาฟื้น)
 # สาเหตุที่ลองใหม่ไปก็เท่านั้น (คลิปหายจริง/ตั้งค่าผิด) ไม่ต้องลองอัตโนมัติ
 PERMANENT_FAIL_RE = re.compile(r"เว็บลบคลิปนี้ไปแล้ว|หน้าคลิปนี้ไม่มีบนเว็บแล้ว|ไม่มีรูปแบบที่เลือก|"
-                               r"ถูกปล่อยทิ้งแล้ว|"
+                               r"ถูกปล่อยทิ้งแล้ว|ไม่ใช่ตัวเต็ม|"
                                r"เว็บไม่รองรับ|คลิปส่วนตัว|ต้องล็อกอิน|อ่าน cookie ไม่ได้|หาลิงก์วิดีโอไม่เจอ|"
                                r"แปลงไม่ได้")
 STALL_RETRIES = 5    # โหลดต่อจากที่ค้างได้กี่ครั้งต่อคลิป
@@ -581,6 +581,22 @@ def resolve_embed_links(embed, referer, depth=0):
     return [], "", False
 
 
+# supjav: ปุ่ม server เป็น <a class="btn-server" data-link="..."> ไม่ใช่ iframe
+# หน้า player ได้จากการกลับด้านตัวอักษรของ data-link แล้วส่งไปที่ตัวกลางของเว็บ
+BTN_SERVER_RE = re.compile(r'<a[^>]*class="btn-server[^"]*"[^>]*data-link="([^"]+)"[^>]*>(.*?)</a>',
+                           re.I | re.S)
+SUPJAV_JUMP = "https://lk1.supremejav.com/supjav.php?c="
+
+
+def btn_servers(page):
+    """server ที่ซ่อนอยู่ในปุ่ม (supjav) คืน [(ชื่อบนปุ่ม, หน้า player)]"""
+    out = []
+    for link, label in BTN_SERVER_RE.findall(page or ""):
+        name = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", label)).strip() or f"server{len(out) + 1}"
+        out.append((name, SUPJAV_JUMP + link[::-1]))
+    return out
+
+
 def get_servers(url, page, notify=None):
     """คืนค่า [(ชื่อ server, หน้า player)] ของหน้านี้"""
     if is_7mm(url):
@@ -592,13 +608,57 @@ def get_servers(url, page, notify=None):
             return [tuple(x) for x in json.loads(raw)]
         except (ValueError, TypeError):
             return []
-    out = []
+    out = btn_servers(page)
     for i, f in enumerate(IFRAME_RE.findall(page)):
         if f.startswith("//"):
             f = "https:" + f
         if f.startswith("http") and not AD_HOSTS.search(f):
             out.append((f"iframe{i + 1}", f))
     return out
+
+
+PREVIEW_SEC = 120  # ลิงก์ที่เจอลอยๆ ในหน้าเว็บ ถ้าสั้นกว่านี้ถือว่าเป็นคลิปตัวอย่าง ไม่ใช่ตัวเต็ม
+PREVIEW_MB = 20  # ไฟล์ mp4 ตรงๆ ที่เล็กกว่านี้ก็ถือว่าเป็นคลิปตัวอย่าง (ไฟล์ตรงๆ ไม่มีความยาวให้อ่าน)
+# ชื่อไฟล์ที่บอกว่าเป็นคลิปตัวอย่าง (เว็บรวมมักมีคลิปพรีวิวของเรื่องอื่นปนอยู่เต็มหน้า)
+PREVIEW_URL_RE = re.compile(r"preview|trailer|sample|mediabook|/thumb", re.I)
+
+
+def media_duration(media, referer):
+    """ถาม yt-dlp ว่าลิงก์นี้ยาวกี่วินาที (ไว้แยกคลิปตัวอย่างออกจากตัวเต็ม) คืน 0 ถ้าไม่รู้"""
+    origin = re.match(r"https?://[^/]+", referer).group(0)
+    args = [YTDLP, "-J", "--no-warnings", "--encoding", "utf-8", "--impersonate", "chrome",
+            "--referer", referer, "--add-headers", f"Origin:{origin}", media]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=child_env(), creationflags=NO_WINDOW, timeout=60)
+        info = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0
+    return float((info or {}).get("duration") or 0)
+
+
+def media_size(media, referer):
+    """ถามขนาดไฟล์ด้วย HEAD (ไฟล์ mp4 ตรงๆ ไม่มีความยาวให้ yt-dlp อ่าน แต่มีขนาดบอก) คืน 0 ถ้าไม่รู้"""
+    try:
+        from curl_cffi import requests as cffi
+        r = cffi.head(media, impersonate="chrome", headers={"Referer": referer},
+                      timeout=30, allow_redirects=True)
+        return int(r.headers.get("Content-Length") or 0)
+    except Exception:
+        return 0
+
+
+def preview_reason(media, referer):
+    """คลิปนี้เป็นแค่ตัวอย่างไหม คืนข้อความเหตุผล ถ้าไม่ใช่คืนค่าว่าง"""
+    dur = media_duration(media, referer)
+    if dur and dur < PREVIEW_SEC:
+        return f"ยาวแค่ {dur:.0f} วินาที"
+    if dur:
+        return ""
+    size = media_size(media, referer)
+    if size and size < PREVIEW_MB * (1 << 20):
+        return f"ไฟล์เล็กแค่ {size / (1 << 20):.1f} MB"
+    return ""
 
 
 def probe_quality(media, referer, limit=0):
@@ -1011,6 +1071,7 @@ SLOW_SERVER = -5  # server ของคลิปไม่ตอบเลยจ�
 CONN_FAIL = -6  # ต่อ host ของ CDN ไม่ติดเลยจนหมดเวลา (ลิงก์ที่เจอทุกอันอยู่ host ที่ตาย)
 SRV_DOWN = -7  # เครื่องต้นทางที่เก็บคลิปนี้ล่มอยู่ (ชั่วคราว จะลองใหม่ให้อัตโนมัติ)
 PLAYER_GONE = -8  # player ของคลิปนี้เลิกให้วิดีโอแล้ว (โดเมนถูกปล่อยทิ้ง เด้งไปหน้าโฆษณา)
+PREVIEW_ONLY = -9  # ในหน้าเว็บมีแต่คลิปตัวอย่าง ไม่มีตัวเต็มให้โหลด
 
 
 def fail_reason(out):
@@ -2388,7 +2449,7 @@ class App(tk.Tk):
         t = threading.Thread(target=work, daemon=True)
         t.start()
         if wait:
-            t.join(15)
+            t.join(3)  # ตอนปิดแอป รอสั้นๆ พอ ไม่งั้นปิดทีต้องรอเป็นสิบวินาที
 
     def _finish(self):
         self.running = False
@@ -2579,13 +2640,18 @@ class App(tk.Tk):
             conn_fail = [False]  # ลิงก์ที่เจอ อยู่บน host ที่ต่อไม่ติด
             srv_down = [False]  # ลิงก์ที่เจอ อยู่บนเครื่องต้นทางที่ล่มอยู่
             parked = [False]  # player ของคลิปนี้ถูกปล่อยทิ้ง เด้งไปหน้าโฆษณา
+            preview = [False]  # ในหน้าเว็บมีแต่คลิปตัวอย่าง
 
             def gather(page):
                 """หาลิงก์วิดีโอจากหน้านี้ คืน (ตัวหลักของแต่ละ server, ลิงก์สำรองของ player เดียวกัน)"""
                 cands, spare = [], []
-                media = find_media(page) if not is_7mm(cur) else ""  # 7mmtv มีคลิปตัวอย่างอื่นปนในหน้า
-                if media:
-                    return [("หน้าเว็บ", media, cur)], spare
+                # ลิงก์ที่ลอยอยู่ในหน้าเว็บมักเป็นคลิปพรีวิวของ "เรื่องอื่น" ในแถบแนะนำ
+                # เลยเก็บไว้เป็นทางเลือกสุดท้าย ใช้ต่อเมื่อไม่มี server ไหนใช้ได้เลย
+                page_media = "" if is_7mm(cur) else find_media(page)
+                if page_media and PREVIEW_URL_RE.search(page_media):
+                    self.events.put(("log", f"[#{item_id}] ลิงก์ในหน้าเว็บเป็นคลิปตัวอย่าง ข้ามไป: "
+                                            f"{page_media[:70]}"))
+                    page_media = ""
                 servers = get_servers(cur, page, notify=note)
                 if not servers and not self.stopping:
                     self.events.put(("log", f"[#{item_id}] ยังไม่เจอ server ลองอ่านหน้าเว็บอีกรอบ"))
@@ -2616,6 +2682,17 @@ class App(tk.Tk):
                             spare.append((f"{name} (สำรอง {n + 1})", alt, ref))
                     else:
                         self.events.put(("log", f"[#{item_id}] server {name}: หาลิงก์วิดีโอไม่เจอ"))
+                if page_media and not cands:
+                    post(DL, "เช็คลิงก์ที่เจอในหน้าเว็บ ...")
+                    why = preview_reason(page_media, cur)
+                    if why:
+                        self.events.put(("log", f"[#{item_id}] ลิงก์ในหน้าเว็บ{why} "
+                                                f"เป็นคลิปตัวอย่าง ไม่ใช่ตัวเต็ม ไม่โหลด"))
+                        preview[0] = True
+                    else:
+                        self.events.put(("log", f"[#{item_id}] ไม่มี server ที่ใช้ได้ "
+                                                f"ใช้ลิงก์ที่เจอในหน้าเว็บแทน"))
+                        cands.append(("หน้าเว็บ", page_media, cur))
                 return cands, spare
 
             fname = None
@@ -2706,6 +2783,9 @@ class App(tk.Tk):
                     self.events.put(("log", f"[#{item_id}] player ของคลิปนี้ถูกปล่อยทิ้งแล้ว "
                                             f"ไม่มีไฟล์ให้โหลด (เบราว์เซอร์ก็เล่นไม่ได้)"))
                     return PLAYER_GONE
+                if preview[0]:
+                    self.events.put(("log", f"[#{item_id}] หน้านี้มีแต่คลิปตัวอย่าง ไม่มีตัวเต็มให้โหลด"))
+                    return PREVIEW_ONLY
                 self.events.put(("log", f"[#{item_id}] หาลิงก์วิดีโอในหน้าเว็บไม่เจอ"))
                 return NO_MEDIA
             if rc != 0 and not cands:
@@ -2747,7 +2827,8 @@ class App(tk.Tk):
                   SLOW_SERVER: f"Timeout: server ไม่ตอบใน {WEB_TIMEOUT} วินาที",
                   CONN_FAIL: f"Timeout: ต่อ server วิดีโอไม่ติดใน {WEB_TIMEOUT} วินาที",
                   SRV_DOWN: "server ที่เก็บคลิปนี้ล่มอยู่ (จะลองใหม่ให้อัตโนมัติ)",
-                  PLAYER_GONE: "player ของคลิปนี้ถูกปล่อยทิ้งแล้ว (เด้งไปหน้าโฆษณา)"
+                  PLAYER_GONE: "player ของคลิปนี้ถูกปล่อยทิ้งแล้ว (เด้งไปหน้าโฆษณา)",
+                  PREVIEW_ONLY: "เจอแต่คลิปตัวอย่าง ไม่ใช่ตัวเต็ม"
                   }.get(rc) or fail_reason(last["out"])
         self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
 
@@ -2808,6 +2889,20 @@ class App(tk.Tk):
                 pass
         self.events.put(("conv_done", item_id, rc, dst, f"encoder: {opts['encoder']}\n" + "\n".join(errs[-40:])))
 
+    def kill_children(self):
+        """ฆ่า yt-dlp/ffmpeg ที่ยังทำงานอยู่ทีเดียวทั้งหมด (สั่งทีละตัวทำให้ปิดแอปช้าเป็นนาที)"""
+        with self.procs_lock:
+            procs = list(self.procs.values())
+        args = ["taskkill", "/T", "/F"]
+        for p in procs:
+            if p.poll() is None:
+                args += ["/PID", str(p.pid)]
+        if len(args) > 3:
+            try:
+                subprocess.run(args, creationflags=NO_WINDOW, capture_output=True, timeout=20)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
     def cancel_auto_retry(self):
         if self.retry_timer:
             self.after_cancel(self.retry_timer)
@@ -2841,12 +2936,7 @@ class App(tk.Tk):
         self.cancel_auto_retry()
         self.auto_retry_left = 0  # กดหยุดเองแล้ว ไม่ต้องลองใหม่ให้
         self.stopping = True
-        with self.procs_lock:
-            procs = list(self.procs.values())
-        for p in procs:
-            if p.poll() is None:
-                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
-                               creationflags=NO_WINDOW, capture_output=True)
+        self.kill_children()
         self.var_status.set("กำลังหยุด ...")
         self._schedule()
 
@@ -2950,6 +3040,15 @@ class App(tk.Tk):
                     self.write_log(f"รับลิงก์จาก Chrome Extension {len(urls)} ลิงก์")
                     self.add_urls("\n".join(urls))
                     if go:
+                        # ลิงก์ที่ส่งมาซ้ำกับแถวที่ล้มเหลวไว้ ให้กลับไปรอโหลดใหม่
+                        # ไม่งั้นสั่งเริ่มแล้วเงียบ เพราะไม่มีแถวไหนอยู่ในสถานะรอโหลด
+                        keys = {url_key(u) for u in urls}
+                        again = [it for it in self.items
+                                 if url_key(it["url"]) in keys and it["status"] in (FAIL, STOPPED)]
+                        for it in again:
+                            self._reset_item(it)
+                        if again:
+                            self.write_log(f"ลิงก์ที่ส่งมาเคยล้มเหลวไว้ {len(again)} รายการ เอากลับมารอโหลดใหม่")
                         self.autostart = True
                     if self.tray:
                         try:
@@ -3122,13 +3221,21 @@ class App(tk.Tk):
     def on_close(self):
         if self.running and not messagebox.askyesno(APP_NAME, tr("กำลังโหลด/แปลงอยู่ จะปิดและหยุดเลยไหม") + "?"):
             return
-        self.stop()
-        self.push_error_logs(wait=True)
+        self.running = False  # ตัวจัดคิวหยุดทันที ไม่ต้องรอรอบถัดไป
+        self.stopping = True
+        self.cancel_auto_retry()
+        self.kill_children()
+        self.save_settings()
+        self.save_queue()
         if self.pending_update:
             self._apply_app_update()
             return
-        self.save_settings()
-        self.save_queue()
+        self.push_error_logs(wait=True)  # ส่ง log ขึ้น GitHub แต่ไม่รอนาน ถ้าไม่ทันเดี๋ยวส่งรอบหน้า
+        if self.tray:  # ถ้าไม่สั่งหยุด ไอคอนจะค้างอยู่ในถาดจนกว่าจะเอาเมาส์ไปชี้
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         self.destroy()
 
 

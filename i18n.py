@@ -204,6 +204,19 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "เจอแต่คลิปตัวอย่าง ไม่ใช่ตัวเต็ม": "Only a preview clip, not the full video",
+    "หน้านี้มีแต่คลิปตัวอย่าง ไม่มีตัวเต็มให้โหลด":
+        "this page only has a preview clip, there is no full video to download",
+    "ลิงก์ในหน้าเว็บเป็นคลิปตัวอย่าง ข้ามไป: ":
+        "the link on the page is a preview clip, skipping: ",
+    "ลิงก์ในหน้าเว็บยาวแค่": "the link on the page is only",
+    "วินาที เป็นคลิปตัวอย่าง ไม่ใช่ตัวเต็ม ไม่โหลด":
+        "seconds long, that is a preview and not the full video, skipping",
+    "ไม่มี server ที่ใช้ได้ ใช้ลิงก์ที่เจอในหน้าเว็บแทน":
+        "no usable server, falling back to the link found on the page",
+    "เช็คลิงก์ที่เจอในหน้าเว็บ ...": "checking the link found on the page ...",
+    "ลิงก์ที่ส่งมาเคยล้มเหลวไว้": "links sent in that had failed before:",
+    "รายการ เอากลับมารอโหลดใหม่": "items, queued again",
     "player ของคลิปนี้ถูกปล่อยทิ้งแล้ว (เด้งไปหน้าโฆษณา)":
         "this clip's player host was abandoned (it now redirects to ads)",
     "เลิกให้วิดีโอแล้ว (เด้งไปหน้าโฆษณา)":
