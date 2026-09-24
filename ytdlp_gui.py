@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.5"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -103,13 +103,15 @@ def size_bytes(txt):
         return float(m.group(1)) * (1 << (10 * "_KMGT".index(m.group(2).upper() or "_")))
     except ValueError:
         return 0.0
+
+
 STALL_SEC = 90       # ขนาดไฟล์ไม่เพิ่มเลยนานเท่านี้ = ค้าง ให้ตัดแล้วโหลดต่อจากเดิม
 # ค่าเริ่มต้นของการลองใหม่อัตโนมัติ ปรับได้ที่ settings.json (auto_retry, auto_retry_wait)
 AUTO_RETRY_MAX = 3   # จบคิวแล้วลองคลิปที่ล้มใหม่ให้เองกี่รอบ (server ที่ล่มชั่วคราวมักกลับมาเอง)
 AUTO_RETRY_WAIT = 120  # รอกี่วินาทีก่อนเริ่มรอบลองใหม่ (ให้ server มีเวลาฟื้น)
 # สาเหตุที่ลองใหม่ไปก็เท่านั้น (คลิปหายจริง/ตั้งค่าผิด) ไม่ต้องลองอัตโนมัติ
 PERMANENT_FAIL_RE = re.compile(r"เว็บลบคลิปนี้ไปแล้ว|หน้าคลิปนี้ไม่มีบนเว็บแล้ว|ไม่มีรูปแบบที่เลือก|"
-                               r"ถูกปล่อยทิ้งแล้ว|ไม่ใช่ตัวเต็ม|"
+                               r"ถูกปล่อยทิ้งแล้ว|ไม่ใช่ตัวเต็ม|HTTP 404|HTTP 410|"
                                r"เว็บไม่รองรับ|คลิปส่วนตัว|ต้องล็อกอิน|อ่าน cookie ไม่ได้|หาลิงก์วิดีโอไม่เจอ|"
                                r"แปลงไม่ได้")
 STALL_RETRIES = 5    # โหลดต่อจากที่ค้างได้กี่ครั้งต่อคลิป
@@ -253,8 +255,16 @@ def note_srv_down(url):
     DEAD_SRV.update(srv_ids(url))
 
 
+QUICK_CONNECT = 10  # host ปกติต่อติดใน 1-2 วินาที ให้ 10 ก็เหลือเฟือ (ที่ตายสนิทจะได้ไม่กินเวลา)
+
+
+def connect_budget(url):
+    """host ที่เคยพิสูจน์แล้วว่าตอบช้าจริง (เช่น recordplay.biz) ให้เวลาเต็ม ที่เหลือให้สั้นๆ พอ"""
+    return WEB_TIMEOUT if url_host(url) in SLOW_HOSTS else QUICK_CONNECT
+
+
 def host_reachable(url, budget=None):
-    """ลองต่อ TCP ไปที่ host ของลิงก์ ให้เวลารวมไม่เกิน budget วินาที (ค่าเริ่มต้น = WEB_TIMEOUT)
+    """ลองต่อ TCP ไปที่ host ของลิงก์ ให้เวลารวมไม่เกิน budget วินาที (ค่าเริ่มต้นดูจาก connect_budget)
     CDN บางตัวสุ่ม host มาแล้วต่อไม่ติดเลย ถ้าเจอแบบนั้นจำ host ไว้ คลิปต่อไปข้ามทันที
     ไม่เสียเวลารอ 21 วินาทีต่อคลิปแบบเดิม"""
     import socket
@@ -263,7 +273,7 @@ def host_reachable(url, budget=None):
         return True
     host = m.group(2).lower()
     port = int(m.group(3)) if m.group(3) else (443 if m.group(1).lower() == "https" else 80)
-    end = time.time() + (budget if budget is not None else WEB_TIMEOUT)
+    end = time.time() + (budget if budget is not None else connect_budget(url))
     while True:
         left = end - time.time()
         try:
@@ -505,6 +515,7 @@ def resolve_embed(embed, referer, depth=0):
 
 
 PARKED_PLAYERS = set()  # host ของ player ที่เลิกให้วิดีโอแล้ว (โดนปล่อยทิ้ง เด้งไปหน้าโฆษณาแทน)
+EMPTY_PLAYERS = set()  # host ที่เปิดด้วย Chrome แล้วไม่ได้อะไรกลับมา (เปิดซ้ำก็เสียเวลาเปล่า)
 # ร่องรอยในหน้าเว็บว่าโดเมนนี้ถูกปล่อยทิ้งแล้วเอาไปหารายได้ต่อ
 PARKED_PAGE_RE = re.compile(r"parklogic|domainparking|sedoparking|bodis\.com", re.I)
 # ร่องรอยใน URL ปลายทางว่าเป็นหน้าโฆษณา (ไม่ใช่หน้า player)
@@ -535,7 +546,8 @@ def resolve_embed_links(embed, referer, depth=0):
     if page and PARKED_PAGE_RE.search(page):
         PARKED_PLAYERS.add(url_host(embed))
         return [], embed, False
-    if (not page or (len(page) < 4000 and not IFRAME_RE.search(page))) and find_chrome():
+    if (not page or (len(page) < 4000 and not IFRAME_RE.search(page))) and find_chrome() \
+            and url_host(embed) not in EMPTY_PLAYERS:
         # หน้าเปล่าๆ ที่ขึ้นว่า "Loading..." = ตัวเว็บใช้ JavaScript พาไปหน้า player จริง ให้ Chrome รันให้
         # (บาง player ไม่ตอบอะไรเลยให้ตัวอ่านหน้าเว็บธรรมดา ต้องให้ Chrome เปิดถึงจะได้หน้าจริง)
         with _chrome_lock:
@@ -556,6 +568,7 @@ def resolve_embed_links(embed, referer, depth=0):
             if is_parked(embed, final):
                 return [], final, False
         elif not raw:
+            EMPTY_PLAYERS.add(url_host(embed))  # เปิดแล้วไม่ได้อะไร จำไว้ ครั้งหน้าข้ามเลย
             # ไม่เจอวิดีโอเลย ถาม Chrome ว่าสุดท้ายไปจบที่หน้าไหน (อาจโดนพาไปหน้าโฆษณา)
             with _chrome_lock:
                 raw2 = fetch_page_chrome(embed, visible=False, timeout=25, js=JS_FINAL_PAGE)
@@ -2710,15 +2723,16 @@ class App(tk.Tk):
                 post(DL, f"กำลังต่อ server {name} ...")
                 if host_reachable(m):
                     return True
-                self.events.put(("log", f"[#{item_id}] server {name}: ต่อ {h} ไม่ติดใน {WEB_TIMEOUT} วินาที "
+                self.events.put(("log", f"[#{item_id}] server {name}: ต่อ {h} ไม่ติดใน {connect_budget(m)} วินาที "
                                         f"ข้ามไปตัวถัดไป"))
                 conn_fail[0] = True
                 return False
 
+            gone404 = [False]  # เจอ 404/410 = คลิปไม่มีอยู่แล้ว วนรอบต่อไปก็เจอเหมือนเดิม
             rc, cands = -1, []
             # โฮสต์ของ CDN สุ่มใหม่ทุกครั้งที่เปิดหน้าเว็บ ถ้าชุดนี้ล่มทั้งหมด ขอชุดใหม่แล้วลองอีกรอบ
             for rnd in range(3):
-                if self.stopping:
+                if self.stopping or gone404[0]:
                     break
                 if rnd:
                     self.events.put(("log", f"[#{item_id}] ลิงก์ชุดนี้ใช้ไม่ได้ทั้งหมด ขอลิงก์ชุดใหม่จากเว็บอีกรอบ"))
@@ -2743,7 +2757,7 @@ class App(tk.Tk):
                     scored.sort(key=lambda x: x[0], reverse=True)
                     cands = [(n, m, r) for _, n, m, r in scored] or cands
                 for name, m, ref in cands + spare:
-                    if self.stopping:
+                    if self.stopping or gone404[0]:
                         break
                     self.events.put(("log", f"[#{item_id}] โหลดจาก server {name}: {m}"))
                     origin = re.match(r"https?://[^/]+", ref).group(0)
@@ -2752,6 +2766,10 @@ class App(tk.Tk):
                     rc, out = attempt_lower(m, extra, (fname + ".%(ext)s") if fname else None, aria=False)
                     if rc == 0:
                         return rc
+                    if re.search(r"HTTP Error (?:404|410)", out):
+                        self.events.put(("log", f"[#{item_id}] server {name}: ไฟล์ไม่มีอยู่แล้ว (404/410) "
+                                                f"ไม่ต้องลองรอบใหม่"))
+                        gone404[0] = True
                     if CONN_FAIL_RE.search(out):  # host นี้ต่อไม่ติด จำไว้ ลิงก์อื่นบน host เดียวกันข้ามได้เลย
                         DEAD_HOSTS.add(url_host(m))
                         note_srv_down(m)

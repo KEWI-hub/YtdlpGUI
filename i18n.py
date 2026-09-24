@@ -204,6 +204,8 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "ไฟล์ไม่มีอยู่แล้ว (404/410) ไม่ต้องลองรอบใหม่":
+        "the file is gone (404/410), no point trying again",
     "เจอแต่คลิปตัวอย่าง ไม่ใช่ตัวเต็ม": "Only a preview clip, not the full video",
     "หน้านี้มีแต่คลิปตัวอย่าง ไม่มีตัวเต็มให้โหลด":
         "this page only has a preview clip, there is no full video to download",
