@@ -14,6 +14,10 @@ This app, its `setup.bat` and this README were written with **Claude** (Anthropi
 
 ### Quick start
 
+**Easiest: the all-in-one zip.** On the [Releases](https://github.com/KEWI-hub/YtdlpGUI/releases/latest) page grab **`YtdlpGUI-vX.Y.Z-full.zip`** (about 200 MB), extract it anywhere and double-click `YtdlpGUI.exe`. The tools in `bin\` are already inside, so nothing else has to be installed or downloaded. `YtdlpGUI.exe` on its own is **not** enough: without `bin\` it stops at "yt-dlp.exe not found".
+
+Or set it up from the repo:
+
 1. Download or clone this repo.
 2. Double-click **`setup.bat`**. It downloads the required tools into `bin\` (about 250 MB) and takes around 15–60 seconds.
 3. `setup.bat` also downloads **`YtdlpGUI.exe`** from the latest **Release**. If that is not possible (e.g. the repo is private), it offers to build it with Python 3.11+ (answer `Y`).
@@ -194,6 +198,10 @@ The full guide below is in Thai, including every setting, how each feature works
 - **จำคิวไว้** ปิดแอปแล้วเปิดใหม่ คิวยังอยู่ คลิปที่โหลดแล้วแต่ยังไม่แปลงจะแปลงต่อได้เลยโดยไม่ต้องโหลดใหม่
 
 ## ติดตั้ง (ครั้งแรก)
+
+**ง่ายสุด: โหลด zip ชุดเต็ม** ที่หน้า [Releases](https://github.com/KEWI-hub/YtdlpGUI/releases/latest) เลือกไฟล์ **`YtdlpGUI-vX.Y.Z-full.zip`** (ประมาณ 200MB) แตกไฟล์ไว้ที่ไหนก็ได้ แล้วดับเบิลคลิก `YtdlpGUI.exe` ใช้ได้เลย เครื่องมือใน `bin\` แนบมาให้ครบแล้ว ไม่ต้องโหลดหรือติดตั้งอะไรเพิ่ม — โหลดแค่ `YtdlpGUI.exe` ตัวเดียว**ใช้ไม่ได้** เพราะไม่มี `bin\` จะขึ้นว่า "ไม่เจอ yt-dlp.exe"
+
+หรือจะติดตั้งจาก repo ก็ได้:
 
 1. โหลดหรือ clone repo นี้ลงเครื่อง
 2. ดับเบิลคลิก **`setup.bat`** จะโหลดเครื่องมือที่จำเป็นมาไว้ใน `bin\` ให้เอง (ประมาณ 250MB ใช้เวลา 15–60 วินาที)
@@ -683,6 +691,12 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 ## ประวัติการเปลี่ยนแปลง
 
 เรียงจากใหม่ไปเก่า
+
+### 2026-09-24 — zip ชุดเต็มใน Release (ไม่เปลี่ยนเวอร์ชันแอป)
+
+- แนบ **`YtdlpGUI-v1.4.2-full.zip`** (202MB) ไว้ใน Release v1.4.2 ข้างๆ `YtdlpGUI.exe` — ในนั้นมี `YtdlpGUI.exe`, `bin\` ครบทั้ง 5 ตัว (yt-dlp, ffmpeg, ffprobe, deno, aria2c), `setup.bat`, `chrome-extension\`, README และ `START-HERE.txt`
+- คนที่โหลดไปแตกไฟล์แล้วเปิดใช้ได้เลย ไม่ต้องรัน `setup.bat` และไม่ต้องรอโหลดเครื่องมือ 430MB
+- ตัวโปรแกรมไม่ได้แก้อะไร ยังเป็น v1.4.2 เดิม (exe ในzip คือไฟล์เดียวกับใน Release)
 
 ### v1.4.2 (2026-09-23) — บอกตรงๆ ว่า Timeout
 
