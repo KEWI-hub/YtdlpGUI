@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -81,6 +81,8 @@ DEFAULTS = {
     "name_max": NAME_MAX,
     "lang": "en",
     "resolution": "สูงสุด",
+    "auto_retry": 3,        # จบคิวแล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เองกี่รอบ (0 = ไม่ลองให้)
+    "auto_retry_wait": 120,  # รอกี่วินาทีก่อนเริ่มแต่ละรอบ
 }
 
 # สถานะ
@@ -88,9 +90,32 @@ WAIT, DL, WAIT_CONV, CONV, DONE, FAIL, STOPPED, HAVE = (
     "รอ", "กำลังโหลด", "รอแปลง", "กำลังแปลง", "เสร็จ", "ล้มเหลว", "หยุด", "มีแล้ว")
 
 PROG_RE = re.compile(r"^\[P\]\s*([\d.]+)%\|(.*?)\|(.*?)(?:\|(\S*))?$")
+MIN_GAIN = 1 << 20  # ได้ข้อมูลเพิ่มน้อยกว่านี้ (1 MiB) ในหนึ่งรอบ ถือว่าไม่คืบหน้า
 DEAD_FRAGS = 8  # เจอ "ชิ้นไฟล์หาย 404" กี่ครั้งถึงจะเลิกรอแล้วเปลี่ยน server
+
+
+def size_bytes(txt):
+    """แปลงขนาดที่ yt-dlp พิมพ์ ("124.53MiB", "1.2GiB") เป็นจำนวนไบต์ คืน 0 ถ้าอ่านไม่ออก"""
+    m = re.search(r"([\d.]+)\s*([KMGT]?)i?B", txt or "", re.I)
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(1)) * (1 << (10 * "_KMGT".index(m.group(2).upper() or "_")))
+    except ValueError:
+        return 0.0
 STALL_SEC = 90       # ขนาดไฟล์ไม่เพิ่มเลยนานเท่านี้ = ค้าง ให้ตัดแล้วโหลดต่อจากเดิม
+# ค่าเริ่มต้นของการลองใหม่อัตโนมัติ ปรับได้ที่ settings.json (auto_retry, auto_retry_wait)
+AUTO_RETRY_MAX = 3   # จบคิวแล้วลองคลิปที่ล้มใหม่ให้เองกี่รอบ (server ที่ล่มชั่วคราวมักกลับมาเอง)
+AUTO_RETRY_WAIT = 120  # รอกี่วินาทีก่อนเริ่มรอบลองใหม่ (ให้ server มีเวลาฟื้น)
+# สาเหตุที่ลองใหม่ไปก็เท่านั้น (คลิปหายจริง/ตั้งค่าผิด) ไม่ต้องลองอัตโนมัติ
+PERMANENT_FAIL_RE = re.compile(r"เว็บลบคลิปนี้ไปแล้ว|หน้าคลิปนี้ไม่มีบนเว็บแล้ว|ไม่มีรูปแบบที่เลือก|"
+                               r"ถูกปล่อยทิ้งแล้ว|"
+                               r"เว็บไม่รองรับ|คลิปส่วนตัว|ต้องล็อกอิน|อ่าน cookie ไม่ได้|หาลิงก์วิดีโอไม่เจอ|"
+                               r"แปลงไม่ได้")
 STALL_RETRIES = 5    # โหลดต่อจากที่ค้างได้กี่ครั้งต่อคลิป
+NOGAIN_ROUNDS = 2    # ตัด-ต่อใหม่กี่รอบติดที่ไม่ได้ข้อมูลเพิ่มเลย ถึงจะเลิกกับ server นี้แล้วไปลองตัวอื่น
+NOSTART_SEC = 180    # ไม่มี % ออกมาเลยนานเท่านี้ = ไม่ได้เริ่มโหลดจริง ให้เลิกแล้วเปลี่ยน server
+STALL_HARD = 240     # ไบต์ไม่เพิ่มเลยนานเท่านี้ = ค้างแน่ ไม่สนว่า yt-dlp พิมพ์อะไรอยู่ (กันวน Retrying ไม่จบ)
 DUR_RE = re.compile(r"Duration: (\d+):(\d+):([\d.]+)")
 TIME_RE = re.compile(r"time=(\d+):(\d+):([\d.]+).*?speed=\s*([\d.]+x|N/A)")
 # keycode ของปุ่มตัวอักษร ใช้แทน keysym ที่เพี้ยนตอนแป้นพิมพ์เป็นภาษาไทย
@@ -189,6 +214,69 @@ WEB_TIMEOUT = 60  # บาง server (เช่น recordplay.biz) ตอบช�
 
 
 SLOW_HOSTS = set()  # เว็บที่รอครบ WEB_TIMEOUT แล้วยังไม่ตอบ (ไว้บอกผู้ใช้ว่าเป็น timeout ไม่ใช่หาลิงก์ไม่เจอ)
+DEAD_HOSTS = set()  # host ของ CDN ที่ต่อ TCP ไม่ติดเลยจนครบเวลา (จำไว้ทั้งรอบที่เปิดแอป ไม่ต้องรอซ้ำทุกคลิป)
+DEAD_SRV = set()  # รหัสเครื่องต้นทางที่ล่ม: CDN สลับโดเมนหน้าบ้านได้ แต่รหัสนี้เดิม เลยจำได้ข้ามโดเมน
+# server วิดีโอล่มชั่วคราว (Cloudflare ต่อหลังบ้านตัวเองไม่ได้ / gateway ล่ม) ไม่ใช่คลิปหาย
+SRV_DOWN_RE = re.compile(r"HTTP Error (?:502|504|520|521|522)")
+# ข้อความของ curl/yt-dlp ตอนต่อ host ไม่ติด (คนละเรื่องกับตอบช้า)
+CONN_FAIL_RE = re.compile(r"Could not connect to server|Failed to connect to|Connection refused|"
+                          r"Couldn't resolve host|Name or service not known", re.I)
+
+
+def srv_ids(url):
+    """รหัสที่ชี้ตัวเครื่องต้นทางของ CDN (ไม่ใช่โดเมนหน้าบ้านที่สุ่มใหม่ได้)
+    เช่น i60k6cbfsa8z.premilkyway.com/...?srv=meuzahgd24x5v กับ
+        i60k6cbfsa8z.w3orciy26oqkhpov.sbs/meuzahgd24x5v/hls3/... คือเครื่องเดียวกัน
+    เก็บทั้ง subdomain ตัวแรก, ค่า srv= และโทเคนหน้าสุดของ path"""
+    ids = set()
+    m = re.match(r"https?://([^/?#]+)([^?#]*)(?:\?(.*))?$", url or "", re.I)
+    if not m:
+        return ids
+    host, path, query = m.group(1).lower(), m.group(2) or "", m.group(3) or ""
+    parts = host.split(".")
+    if len(parts) > 2 and parts[0] not in ("www", "m"):
+        ids.add(parts[0])
+    q = re.search(r"(?:^|&)srv=([^&]+)", query, re.I)
+    if q:
+        ids.add(q.group(1).lower())
+    seg = path.strip("/").split("/")[0] if path.strip("/") else ""
+    if re.fullmatch(r"[a-z0-9_-]{8,32}", seg, re.I) and not re.fullmatch(r"hls\d*|stream|video", seg, re.I):
+        ids.add(seg.lower())
+    return ids
+
+
+def srv_is_down(url):
+    return bool(srv_ids(url) & DEAD_SRV) or url_host(url) in DEAD_HOSTS
+
+
+def note_srv_down(url):
+    DEAD_SRV.update(srv_ids(url))
+
+
+def host_reachable(url, budget=None):
+    """ลองต่อ TCP ไปที่ host ของลิงก์ ให้เวลารวมไม่เกิน budget วินาที (ค่าเริ่มต้น = WEB_TIMEOUT)
+    CDN บางตัวสุ่ม host มาแล้วต่อไม่ติดเลย ถ้าเจอแบบนั้นจำ host ไว้ คลิปต่อไปข้ามทันที
+    ไม่เสียเวลารอ 21 วินาทีต่อคลิปแบบเดิม"""
+    import socket
+    m = re.match(r"(https?)://([^/:?#]+)(?::(\d+))?", url or "", re.I)
+    if not m:
+        return True
+    host = m.group(2).lower()
+    port = int(m.group(3)) if m.group(3) else (443 if m.group(1).lower() == "https" else 80)
+    end = time.time() + (budget if budget is not None else WEB_TIMEOUT)
+    while True:
+        left = end - time.time()
+        try:
+            with socket.create_connection((host, port), timeout=max(5.0, min(15.0, left))):
+                DEAD_HOSTS.discard(host)
+                return True
+        except OSError:
+            pass
+        if time.time() >= end:
+            DEAD_HOSTS.add(host)
+            note_srv_down(url)
+            return False
+        time.sleep(1)
 
 
 def _note_timeout(url, err):
@@ -376,6 +464,11 @@ JS_EMBED_PAGE = r"""(function(){
   return JSON.stringify({u: location.href, h: h});
 })()"""
 
+JS_FINAL_PAGE = r"""(function(){
+  if (document.readyState !== 'complete') return '';
+  return JSON.stringify({u: location.href, h: document.documentElement.outerHTML.slice(0, 20000)});
+})()"""
+
 # ข้อความที่ player ขึ้นเมื่อคลิปถูกลบหรือหมดอายุไปแล้ว
 DEAD_RE = re.compile(r"no longer available|has been deleted|file was deleted|file not found", re.I)
 # ชื่อหน้าเว็บที่บอกว่าหน้านี้ไม่มีแล้ว (ลิงก์ในหน้ารวมบางอันชี้ไปหน้าที่ถูกลบ)
@@ -411,31 +504,72 @@ def resolve_embed(embed, referer, depth=0):
     return (links[0] if links else ""), ref
 
 
+PARKED_PLAYERS = set()  # host ของ player ที่เลิกให้วิดีโอแล้ว (โดนปล่อยทิ้ง เด้งไปหน้าโฆษณาแทน)
+# ร่องรอยในหน้าเว็บว่าโดเมนนี้ถูกปล่อยทิ้งแล้วเอาไปหารายได้ต่อ
+PARKED_PAGE_RE = re.compile(r"parklogic|domainparking|sedoparking|bodis\.com", re.I)
+# ร่องรอยใน URL ปลายทางว่าเป็นหน้าโฆษณา (ไม่ใช่หน้า player)
+PARKED_URL_RE = re.compile(r"parklogic|utm_campaign=|utm_source=|pstool=|psid=|/pu/", re.I)
+
+
+def is_parked(embed, final):
+    """player พาไปจบที่เว็บอื่นที่เป็นหน้าโฆษณา = โดเมน player เจ้านี้ถูกปล่อยทิ้งแล้ว ไม่มีวิดีโอให้โหลด"""
+    if not final or url_host(final) == url_host(embed) or not PARKED_URL_RE.search(final):
+        return False
+    PARKED_PLAYERS.add(url_host(embed))
+    return True
+
+
 def resolve_embed_links(embed, referer, depth=0):
     """เปิดหน้า player ของแต่ละ server หาลิงก์ m3u8/mp4 ถ้าไม่เจอให้ตาม iframe ที่ซ้อนอยู่ข้างในอีกชั้น
     คืนค่า ([ลิงก์วิดีโอ เรียงตัวที่ควรใช้ก่อน], หน้าที่ใช้เป็น referer, คลิปถูกลบไปแล้วหรือไม่)"""
     if embed.startswith("//"):
         embed = "https:" + embed
+    if url_host(embed) in PARKED_PLAYERS:  # รู้แล้วว่า player เจ้านี้เลิกให้วิดีโอ ไม่ต้องเสียเวลาเปิดซ้ำ
+        return [], embed, False
     page = fetch_with_referer(embed, referer)
     media = find_media_all(page, embed)
     if media:
         return media, embed, False
     if page and DEAD_RE.search(page):
         return [], embed, True
-    if page and len(page) < 4000 and not IFRAME_RE.search(page) and find_chrome():
+    if page and PARKED_PAGE_RE.search(page):
+        PARKED_PLAYERS.add(url_host(embed))
+        return [], embed, False
+    if (not page or (len(page) < 4000 and not IFRAME_RE.search(page))) and find_chrome():
         # หน้าเปล่าๆ ที่ขึ้นว่า "Loading..." = ตัวเว็บใช้ JavaScript พาไปหน้า player จริง ให้ Chrome รันให้
+        # (บาง player ไม่ตอบอะไรเลยให้ตัวอ่านหน้าเว็บธรรมดา ต้องให้ Chrome เปิดถึงจะได้หน้าจริง)
         with _chrome_lock:
-            raw = fetch_page_chrome(embed, visible=False, timeout=40, js=JS_EMBED_PAGE)
+            # หน้าที่ไม่ตอบอะไรเลยให้เวลาน้อยกว่า จะได้ไม่ถ่วงคิวถ้า player เจ้านั้นตายแล้ว
+            raw = fetch_page_chrome(embed, visible=False, timeout=40 if page else 25, js=JS_EMBED_PAGE)
         try:
             data = json.loads(raw) if raw else None
         except ValueError:
             data = None
         if data and data.get("h"):
-            media = find_media_all(data["h"], data.get("u") or embed)
+            final = data.get("u") or embed
+            media = find_media_all(data["h"], final)
             if media:
-                return media, data.get("u") or embed, False
+                return media, final, False
             if DEAD_RE.search(data["h"]):
-                return [], data.get("u") or embed, True
+                return [], final, True
+            # เปิดแล้วไปโผล่คนละเว็บที่หน้าตาเป็นหน้าโฆษณา = player เจ้านี้ถูกปล่อยทิ้งแล้ว
+            if is_parked(embed, final):
+                return [], final, False
+        elif not raw:
+            # ไม่เจอวิดีโอเลย ถาม Chrome ว่าสุดท้ายไปจบที่หน้าไหน (อาจโดนพาไปหน้าโฆษณา)
+            with _chrome_lock:
+                raw2 = fetch_page_chrome(embed, visible=False, timeout=25, js=JS_FINAL_PAGE)
+            try:
+                data2 = json.loads(raw2) if raw2 else None
+            except ValueError:
+                data2 = None
+            if data2:
+                final = data2.get("u") or ""
+                media = find_media_all(data2.get("h") or "", final or embed)
+                if media:
+                    return media, final or embed, False
+                if is_parked(embed, final):
+                    return [], final, False
     if depth < 2:
         for f in IFRAME_RE.findall(page):
             if f.startswith("//"):
@@ -874,14 +1008,22 @@ NO_MEDIA = -2  # หาลิงก์วิดีโอไม่เจอ
 DEAD_CLIP = -3  # เว็บบอกเองว่าคลิปถูกลบหรือหมดอายุแล้ว
 PAGE_GONE = -4  # หน้าคลิปบนเว็บถูกลบไปแล้ว (404)
 SLOW_SERVER = -5  # server ของคลิปไม่ตอบเลยจนหมดเวลา
+CONN_FAIL = -6  # ต่อ host ของ CDN ไม่ติดเลยจนหมดเวลา (ลิงก์ที่เจอทุกอันอยู่ host ที่ตาย)
+SRV_DOWN = -7  # เครื่องต้นทางที่เก็บคลิปนี้ล่มอยู่ (ชั่วคราว จะลองใหม่ให้อัตโนมัติ)
+PLAYER_GONE = -8  # player ของคลิปนี้เลิกให้วิดีโอแล้ว (โดเมนถูกปล่อยทิ้ง เด้งไปหน้าโฆษณา)
 
 
 def fail_reason(out):
     """สรุปสาเหตุจาก output ของ yt-dlp ให้อ่านง่าย"""
     m = re.search(r"HTTP Error (\d+)", out)
     if m:
-        return f"HTTP {m.group(1)}"
-    for key, msg in (("stalled", "ค้างหลายรอบ ลองใหม่ทีหลัง"), ("Unsupported URL", "เว็บไม่รองรับ"),
+        code = m.group(1)
+        return f"server วิดีโอล่ม (HTTP {code})" if code in ("502", "504", "520", "521", "522") else f"HTTP {code}"
+    if CONN_FAIL_RE.search(out):
+        return "เชื่อมต่อ server วิดีโอไม่ได้"
+    for key, msg in (("nostart", f"server ไม่ส่งข้อมูลมาเลย (ค้างที่ 0% เกิน {NOSTART_SEC} วินาที)"),
+                     ("nogain", "server หยุดส่งข้อมูลกลางคัน (โหลดต่อแล้วก็ไม่ไปต่อ)"),
+                     ("stalled", "ค้างหลายรอบ ลองใหม่ทีหลัง"), ("Unsupported URL", "เว็บไม่รองรับ"),
                      ("Requested format is not available", "ไม่มีรูปแบบที่เลือก"),
                      ("Operation too slow", "เซิร์ฟเวอร์ตอบช้ามาก"), ("fragment 1 not found", "ไฟล์หายจากเซิร์ฟเวอร์"),
                      ("Private video", "คลิปส่วนตัว"), ("Sign in", "ต้องล็อกอิน"), ("timed out", "หมดเวลา"),
@@ -975,6 +1117,18 @@ TOOLS = {
     "deno": ("denoland/deno", r"^deno-x86_64-pc-windows-msvc\.zip$", ("deno.exe",), ["--version"], r"deno (\d+\.\d+\.\d+)"),
     "aria2c": ("aria2/aria2", r"win-64bit.*\.zip$", ("aria2c.exe",), ["--version"], r"aria2 version (\d+\.\d+\.\d+)"),
 }
+
+
+# ไฟล์ที่แต่ละตัวต้องมีใน bin\ และขนาดที่ต้องโหลด (MB คร่าวๆ ไว้บอกผู้ใช้ก่อนโหลด)
+TOOL_FILES = {"yt-dlp": ("yt-dlp.exe",), "ffmpeg": ("ffmpeg.exe", "ffprobe.exe"),
+              "deno": ("deno.exe",), "aria2c": ("aria2c.exe",)}
+TOOL_MB = {"yt-dlp": 18, "ffmpeg": 90, "deno": 40, "aria2c": 5}
+
+
+def missing_tools():
+    """ชื่อเครื่องมือที่ยังไม่มีใน bin\ (เรียงตามลำดับใน TOOLS)"""
+    return [n for n, files in TOOL_FILES.items()
+            if any(not os.path.isfile(os.path.join(BIN_DIR, f)) for f in files)]
 
 
 def local_tool_version(name):
@@ -1299,6 +1453,10 @@ class App(tk.Tk):
         self.running = False
         self.stopping = False
         self.busy_updating = False
+        self.auto_retry_max = max(0, min(20, int(s.get("auto_retry", AUTO_RETRY_MAX) or 0)))
+        self.auto_retry_wait = max(10, min(3600, int(s.get("auto_retry_wait", AUTO_RETRY_WAIT) or AUTO_RETRY_WAIT)))
+        self.auto_retry_left = self.auto_retry_max  # เหลือลองใหม่อัตโนมัติอีกกี่รอบ
+        self.retry_timer = None
         self.title_queue = queue.Queue()
         self.cancelled = set()  # id ของคลิปที่ผู้ใช้เอาติ๊กแปลงออกระหว่างแปลง
 
@@ -1333,11 +1491,26 @@ class App(tk.Tk):
         threading.Thread(target=lambda: self.events.put(("encoders", benchmark_encoders())), daemon=True).start()
         self.after(100, self._pump)
 
-        if not os.path.isfile(YTDLP):
-            messagebox.showerror(APP_NAME, tr(f"ไม่เจอ yt-dlp.exe ที่\n{YTDLP}") + "\n\nsetup.bat")
+        missing = missing_tools()
+        if missing:
+            self.after(300, lambda: self.offer_first_setup(missing))
         elif self.var_update.get():
             self.run_update()
             self.check_app_update()
+
+    def offer_first_setup(self, missing):
+        """ยังไม่มีเครื่องมือใน bin\ (เช่นโหลดมาแค่ YtdlpGUI.exe ตัวเดียว) ถามแล้วโหลดให้ในแอปเลย
+        ไม่ต้องไปรัน setup.bat"""
+        mb = sum(TOOL_MB.get(n, 0) for n in missing)
+        if messagebox.askyesno(APP_NAME, tr("แอปยังใช้งานไม่ได้ เพราะยังไม่มีเครื่องมือเหล่านี้ใน bin\\") + "\n\n"
+                               + "    " + ", ".join(missing) + "\n\n"
+                               + tr(f"จะโหลดให้เลยไหม (ประมาณ {mb} MB)") + "\n"
+                               + tr("(กด No ถ้าจะไปโหลด zip ชุดเต็มจากหน้า Releases เอง)")):
+            self.write_log("ยังไม่มีเครื่องมือใน bin\\: " + ", ".join(missing) + " กำลังโหลดให้ ...")
+            self.run_update(only=missing)
+        else:
+            self.var_status.set("ยังโหลดคลิปไม่ได้ ต้องมีเครื่องมือใน bin\\ ก่อน")
+            self.write_log("ข้ามการโหลดเครื่องมือ กดปุ่ม \"อัปเดตเครื่องมือ\" เมื่อพร้อมโหลด")
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -1904,6 +2077,7 @@ class App(tk.Tk):
             "auto_clear": self.var_auto_clear.get(), "max_pages": to_int(self.var_max_pages, 5, 1, 50),
             "max_dl": to_int(self.var_max_dl, 3, 1, 8), "max_conv": to_int(self.var_max_conv, 1, 1, 4),
             "frags": to_int(self.var_frags, 16, 1, 32), "name_max": to_int(self.var_name_max, NAME_MAX, 30, 150),
+            "auto_retry": self.auto_retry_max, "auto_retry_wait": self.auto_retry_wait,
         })
 
     def browse_out(self):
@@ -2041,18 +2215,19 @@ class App(tk.Tk):
         subprocess.Popen(["cmd", "/c", script], creationflags=NO_WINDOW, cwd=APP_DIR, env=fresh_env())
         self.destroy()
 
-    def run_update(self):
+    def run_update(self, only=None):
+        """เช็ค/โหลดเครื่องมือใน bin\ ถ้าใส่ only มา จะโหลดเฉพาะตัวที่ระบุ (ตอนเปิดครั้งแรกที่ยังไม่มีอะไรเลย)"""
         if self.running or self.busy_updating:
             return
         self.busy_updating = True
         self.btn_start.configure(state="disabled")
         self.btn_update.configure(state="disabled")
-        self.var_status.set("กำลังเช็คอัปเดตเครื่องมือ ...")
+        self.var_status.set("กำลังโหลดเครื่องมือที่ยังไม่มี ..." if only else "กำลังเช็คอัปเดตเครื่องมือ ...")
 
         def work():
             rc = 0
             log = lambda m: self.events.put(("log", m))
-            for name in TOOLS:
+            for name in (only or TOOLS):
                 try:
                     local = local_tool_version(name)
                     remote, url = remote_tool(name)
@@ -2142,6 +2317,12 @@ class App(tk.Tk):
     def start(self):
         if self.running or self.busy_updating:
             return
+        self.cancel_auto_retry()
+        self.auto_retry_left = self.auto_retry_max  # กดเริ่มเองคือเริ่มนับใหม่
+        missing = missing_tools()
+        if missing:
+            self.offer_first_setup(missing)
+            return
         if not any(it["status"] in (WAIT, WAIT_CONV) for it in self.items):
             self.var_status.set("ไม่มีลิงก์ที่รอโหลด")
             return
@@ -2215,8 +2396,20 @@ class App(tk.Tk):
         self.btn_update.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         failed = sum(1 for i in self.items if i["status"] == FAIL)
-        self.var_status.set("หยุดแล้ว" if self.stopping else
-                            f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}")
+        retryable = [i for i in self.items if i["status"] == FAIL
+                     and not PERMANENT_FAIL_RE.search(i["progress"] or "")]
+        if not self.stopping and retryable and self.auto_retry_left > 0:
+            self.auto_retry_left -= 1
+            mins = max(1, self.auto_retry_wait // 60)
+            self.var_status.set(f"คิวเสร็จแล้ว (ล้มเหลว {failed}) จะลองใหม่ {len(retryable)} คลิป "
+                                f"ในอีก {mins} นาที")
+            self.write_log(f"คิวหมดแล้ว มี {len(retryable)} คลิปที่ล้มเพราะ server "
+                           f"จะลองใหม่ให้เองในอีก {mins} นาที")
+            self.cancel_auto_retry()
+            self.retry_timer = self.after(self.auto_retry_wait * 1000, self.auto_retry)
+        else:
+            self.var_status.set("หยุดแล้ว" if self.stopping else
+                                f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}")
         self.save_queue()
         self.push_error_logs()
         if self.pending_update and not self.stopping:
@@ -2250,7 +2443,8 @@ class App(tk.Tk):
             args = self.build_args(target, o, pathfile, extra, outtmpl, aria)
             self.events.put(("log", f"[#{item_id}] > " + subprocess.list2cmdline(args[1:])))
             out = []
-            st = {"t": time.time(), "bytes": None, "active": False, "stalled": False, "gone": 0}
+            st = {"t": time.time(), "bytes": None, "active": False, "stalled": False, "gone": 0,
+                  "seen": False, "start": time.time(), "nostart": False, "post": False, "grew": 0, "max": 0.0}
 
             def on_line(line):
                 m = PROG_RE.match(line.strip())
@@ -2258,10 +2452,16 @@ class App(tk.Tk):
                     pct, spd, eta, got = m.groups()
                     if got != st["bytes"]:
                         st["bytes"], st["t"] = got, time.time()
-                    st["active"] = float(pct) < 100
+                    # นับว่าคืบหน้าจริงเมื่อได้ไบต์เพิ่มเกิน MIN_GAIN (ตัวเลขที่รายงานตอนโหลดต่อมักกระดิกเล็กน้อย)
+                    v = size_bytes(got)
+                    if v > st["max"] + MIN_GAIN:
+                        st["max"], st["grew"] = v, st["grew"] + 1
+                    st["active"], st["seen"] = float(pct) < 100, True
                     post(DL, f"{float(pct):.1f}%  {spd.strip()}  ETA {eta.strip()}")
                     return
                 st["active"] = False  # ช่วงรวมไฟล์/แก้ไฟล์ไม่มี progress ไม่นับว่าค้าง
+                if re.search(r"\[Merger\]|\[Fixup|\[ffmpeg\]|\[ExtractAudio\]|Deleting original file", line):
+                    st["post"] = True  # เข้าโหมดรวมไฟล์แล้ว ไบต์ไม่เพิ่มเป็นเรื่องปกติ
                 if "Retrying fragment" in line and ("404" in line or "410" in line):
                     st["gone"] += 1
                     if st["gone"] == DEAD_FRAGS:
@@ -2283,8 +2483,16 @@ class App(tk.Tk):
             def watchdog(done):
                 """ถ้าขนาดไฟล์ไม่เพิ่มเลย STALL_SEC วินาที ให้ฆ่า yt-dlp (แล้วค่อยรันใหม่ให้โหลดต่อจากเดิม)"""
                 while not done.wait(5):
-                    if st["active"] and time.time() - st["t"] > STALL_SEC and not self.stopping:
+                    if self.stopping:
+                        return
+                    # ยังไม่เคยมี % ออกมาเลย = yt-dlp ค้างรอ server ที่ไม่ส่งข้อมูล (แถวนี้จะโชว์ 0% ค้างตลอด)
+                    nostart = not st["seen"] and time.time() - st["start"] > NOSTART_SEC
+                    # ไบต์ไม่ขยับนานมากก็คือค้าง ไม่ว่า yt-dlp จะพิมพ์ Retrying อยู่หรือไม่
+                    # (เดิมดูแต่ st["active"] ซึ่งถูกปิดทุกครั้งที่มีบรรทัดที่ไม่ใช่ progress เลยไม่เคยจับได้)
+                    hard = st["seen"] and not st["post"] and time.time() - st["t"] > STALL_HARD
+                    if nostart or hard or (st["active"] and time.time() - st["t"] > STALL_SEC):
                         st["stalled"] = True
+                        st["nostart"] = nostart
                         with self.procs_lock:
                             p = self.procs.get(("dl", item_id))
                         if p and p.poll() is None:
@@ -2292,8 +2500,9 @@ class App(tk.Tk):
                                            capture_output=True, creationflags=NO_WINDOW)
                         return
 
+            nogain = 0  # กี่รอบติดที่รันแล้วไม่ได้ข้อมูลเพิ่มเลยสักไบต์
             for n in range(STALL_RETRIES + 1):
-                st.update(t=time.time(), active=False, stalled=False)
+                st.update(t=time.time(), active=False, stalled=False, grew=0)
                 done = threading.Event()
                 threading.Thread(target=watchdog, args=(done,), daemon=True).start()
                 try:
@@ -2305,11 +2514,22 @@ class App(tk.Tk):
                     done.set()
                 if not st["stalled"] or self.stopping or n == STALL_RETRIES:
                     break
+                nogain = nogain + 1 if not st["grew"] else 0  # รอบนี้ได้ไบต์เพิ่มจริงไหม
+                if nogain >= NOGAIN_ROUNDS:  # ตัด-ต่อใหม่แล้วก็ยังไม่ได้อะไรเพิ่ม เลิกกับ server นี้
+                    self.events.put(("log", f"[#{item_id}] ตัดแล้วโหลดต่อ {nogain} รอบติดยังไม่ได้ข้อมูลเพิ่มเลย "
+                                            f"เลิกกับ server นี้ ไปลองตัวถัดไป"))
+                    out.append("ERROR: nogain - โหลดต่อแล้วไม่ได้ข้อมูลเพิ่มเลย")
+                    break
+                if st["nostart"]:  # ไม่ได้เริ่มโหลดเลย รันคำสั่งเดิมซ้ำก็ค้างเหมือนเดิม ไปลอง server อื่นดีกว่า
+                    self.events.put(("log", f"[#{item_id}] ไม่ส่งข้อมูลมาเลยใน {NOSTART_SEC} วินาที "
+                                            f"(ค้างที่ 0%) เลิกแล้วไปลอง server อื่น"))
+                    out.append("ERROR: nostart - server ไม่ส่งข้อมูลมาเลย")
+                    break
                 # yt-dlp จำชิ้นที่โหลดแล้วไว้ในไฟล์ .ytdl รันใหม่ด้วยคำสั่งเดิมจะโหลดต่อจากที่ค้าง
                 self.events.put(("log", f"[#{item_id}] ค้างไม่ขยับ {STALL_SEC} วินาที "
                                         f"ตัดแล้วโหลดต่อจากเดิม (ครั้งที่ {n + 1}/{STALL_RETRIES})"))
                 post(DL, f"ค้าง โหลดต่อจากเดิม ({n + 1}/{STALL_RETRIES}) ...")
-            if st["stalled"] and rc != 0:
+            if st["stalled"] and rc != 0 and not st["nostart"]:
                 out.append("ERROR: stalled - ค้างหลายรอบ")
             last["out"] = "\n".join(out[-50:])
             return rc, last["out"]
@@ -2356,6 +2576,9 @@ class App(tk.Tk):
                     return "have:" + f
             gone = [False]  # เว็บบอกเองว่าคลิปถูกลบ ไม่ต้องลองซ้ำ
             timed_out = [False]  # server ไม่ตอบเลยจนหมดเวลา (คนละเรื่องกับหาลิงก์ไม่เจอ)
+            conn_fail = [False]  # ลิงก์ที่เจอ อยู่บน host ที่ต่อไม่ติด
+            srv_down = [False]  # ลิงก์ที่เจอ อยู่บนเครื่องต้นทางที่ล่มอยู่
+            parked = [False]  # player ของคลิปนี้ถูกปล่อยทิ้ง เด้งไปหน้าโฆษณา
 
             def gather(page):
                 """หาลิงก์วิดีโอจากหน้านี้ คืน (ตัวหลักของแต่ละ server, ลิงก์สำรองของ player เดียวกัน)"""
@@ -2372,6 +2595,11 @@ class App(tk.Tk):
                         break
                     post(DL, f"กำลังเช็ค server {name} ...")
                     links, ref, dead = resolve_embed_links(embed, cur)
+                    if not links and url_host(embed) in PARKED_PLAYERS:
+                        self.events.put(("log", f"[#{item_id}] server {name}: {url_host(embed)} "
+                                                f"เลิกให้วิดีโอแล้ว (เด้งไปหน้าโฆษณา)"))
+                        parked[0] = True
+                        continue
                     if not links and not dead and not fetch_with_referer(embed, cur):
                         slow = url_host(embed) in SLOW_HOSTS
                         self.events.put(("log", f"[#{item_id}] server {name}: " + (
@@ -2394,9 +2622,25 @@ class App(tk.Tk):
             if title and not opts.get("stem"):
                 fname = pick_name(item_id, opts["out"], title, url,
                                   opts.get("name_max", NAME_MAX)).replace("%", "%%")
+            def reachable(name, m):
+                """ข้าม host ที่รู้แล้วว่าต่อไม่ติด ตัวที่ยังไม่รู้ก็ลองต่อดูก่อน (รอไม่เกิน WEB_TIMEOUT)"""
+                h = url_host(m)
+                if srv_is_down(m):
+                    self.events.put(("log", f"[#{item_id}] ข้าม server {name}: เครื่องต้นทาง "
+                                            f"{'/'.join(sorted(srv_ids(m))) or h} ใช้ไม่ได้ (เจอมาแล้วรอบนี้)"))
+                    srv_down[0] = True
+                    return False
+                post(DL, f"กำลังต่อ server {name} ...")
+                if host_reachable(m):
+                    return True
+                self.events.put(("log", f"[#{item_id}] server {name}: ต่อ {h} ไม่ติดใน {WEB_TIMEOUT} วินาที "
+                                        f"ข้ามไปตัวถัดไป"))
+                conn_fail[0] = True
+                return False
+
             rc, cands = -1, []
             # โฮสต์ของ CDN สุ่มใหม่ทุกครั้งที่เปิดหน้าเว็บ ถ้าชุดนี้ล่มทั้งหมด ขอชุดใหม่แล้วลองอีกรอบ
-            for rnd in range(2):
+            for rnd in range(3):
                 if self.stopping:
                     break
                 if rnd:
@@ -2404,6 +2648,8 @@ class App(tk.Tk):
                     post(DL, "ขอลิงก์ชุดใหม่ ...")
                     page = fetch_page(cur) or page
                 cands, spare = gather(page)
+                cands = [c for c in cands if reachable(*c[:2])]
+                spare = [c for c in spare if not srv_is_down(c[1])]
                 if not cands:
                     if gone[0]:
                         break
@@ -2426,9 +2672,20 @@ class App(tk.Tk):
                     origin = re.match(r"https?://[^/]+", ref).group(0)
                     extra = ["--impersonate", "chrome", "--referer", ref, "--add-headers", f"Origin:{origin}"]
                     # aria2c ปลอมตัวเป็น Chrome ไม่ได้ เลยใช้ตัวโหลดของ yt-dlp แทน
-                    rc = attempt_lower(m, extra, (fname + ".%(ext)s") if fname else None, aria=False)[0]
+                    rc, out = attempt_lower(m, extra, (fname + ".%(ext)s") if fname else None, aria=False)
                     if rc == 0:
                         return rc
+                    if CONN_FAIL_RE.search(out):  # host นี้ต่อไม่ติด จำไว้ ลิงก์อื่นบน host เดียวกันข้ามได้เลย
+                        DEAD_HOSTS.add(url_host(m))
+                        note_srv_down(m)
+                        conn_fail[0] = True
+                        self.events.put(("log", f"[#{item_id}] server {name}: ต่อ {url_host(m)} ไม่ได้ "
+                                                f"จำไว้แล้ว จะไม่ลองเครื่องนี้ซ้ำ"))
+                    elif SRV_DOWN_RE.search(out):  # Cloudflare ตอบ 5xx = เครื่องหลังบ้านล่ม จำรหัสเครื่องไว้
+                        note_srv_down(m)
+                        srv_down[0] = True
+                        self.events.put(("log", f"[#{item_id}] server {name}: เครื่องต้นทางล่ม "
+                                                f"({fail_reason(out)}) จำไว้แล้ว จะไม่ลองเครื่องนี้ซ้ำรอบนี้"))
                     self.events.put(("log", f"[#{item_id}] server {name} โหลดไม่ผ่าน ลองลิงก์ถัดไป"))
             if not cands:
                 if gone[0]:
@@ -2437,8 +2694,25 @@ class App(tk.Tk):
                     self.events.put(("log", f"[#{item_id}] server ไม่ตอบเลยใน {WEB_TIMEOUT} วินาที "
                                             f"(ลองโหลดคลิปนี้ด้วยโปรแกรมอื่นแทน)"))
                     return SLOW_SERVER
+                if conn_fail[0]:
+                    self.events.put(("log", f"[#{item_id}] ต่อ server วิดีโอไม่ติดใน {WEB_TIMEOUT} วินาที "
+                                            f"(ลองโหลดคลิปนี้ด้วยโปรแกรมอื่นแทน)"))
+                    return CONN_FAIL
+                if srv_down[0]:
+                    self.events.put(("log", f"[#{item_id}] เครื่องต้นทางที่เก็บคลิปนี้ล่มอยู่ "
+                                            f"จะลองใหม่ให้อัตโนมัติเมื่อคิวหมด"))
+                    return SRV_DOWN
+                if parked[0]:
+                    self.events.put(("log", f"[#{item_id}] player ของคลิปนี้ถูกปล่อยทิ้งแล้ว "
+                                            f"ไม่มีไฟล์ให้โหลด (เบราว์เซอร์ก็เล่นไม่ได้)"))
+                    return PLAYER_GONE
                 self.events.put(("log", f"[#{item_id}] หาลิงก์วิดีโอในหน้าเว็บไม่เจอ"))
                 return NO_MEDIA
+            if rc != 0 and not cands:
+                if conn_fail[0]:
+                    return CONN_FAIL
+                if srv_down[0]:
+                    return SRV_DOWN
             return rc
 
         if is_page_site(url) or url_host(url) in NO_YTDLP_HOSTS:
@@ -2470,7 +2744,11 @@ class App(tk.Tk):
         reason = {NO_MEDIA: "หาลิงก์วิดีโอไม่เจอ",
                   DEAD_CLIP: "เว็บลบคลิปนี้ไปแล้ว",
                   PAGE_GONE: "หน้าคลิปนี้ไม่มีบนเว็บแล้ว",
-                  SLOW_SERVER: f"Timeout: server ไม่ตอบใน {WEB_TIMEOUT} วินาที"}.get(rc) or fail_reason(last["out"])
+                  SLOW_SERVER: f"Timeout: server ไม่ตอบใน {WEB_TIMEOUT} วินาที",
+                  CONN_FAIL: f"Timeout: ต่อ server วิดีโอไม่ติดใน {WEB_TIMEOUT} วินาที",
+                  SRV_DOWN: "server ที่เก็บคลิปนี้ล่มอยู่ (จะลองใหม่ให้อัตโนมัติ)",
+                  PLAYER_GONE: "player ของคลิปนี้ถูกปล่อยทิ้งแล้ว (เด้งไปหน้าโฆษณา)"
+                  }.get(rc) or fail_reason(last["out"])
         self.events.put(("dl_done", item_id, rc, file, reason, last["out"]))
 
     def _convert_job(self, item_id, src, opts):
@@ -2530,9 +2808,38 @@ class App(tk.Tk):
                 pass
         self.events.put(("conv_done", item_id, rc, dst, f"encoder: {opts['encoder']}\n" + "\n".join(errs[-40:])))
 
+    def cancel_auto_retry(self):
+        if self.retry_timer:
+            self.after_cancel(self.retry_timer)
+            self.retry_timer = None
+
+    def auto_retry(self):
+        """ลองคลิปที่ล้มด้วยสาเหตุชั่วคราวใหม่ให้เอง (เรียกหลังคิวหมดและรอ AUTO_RETRY_WAIT แล้ว)"""
+        self.retry_timer = None
+        if self.busy_updating:  # ติดอัปเดตเครื่องมืออยู่ เลื่อนไปก่อน อย่าทิ้งรอบลองใหม่
+            self.retry_timer = self.after(30000, self.auto_retry)
+            return
+        if self.running:
+            return
+        again = [i for i in self.items if i["status"] == FAIL
+                 and not PERMANENT_FAIL_RE.search(i["progress"] or "")]
+        if not again:
+            return
+        DEAD_HOSTS.clear()   # server ที่ล่มเมื่อกี้อาจฟื้นแล้ว เริ่มนับใหม่หมด
+        DEAD_SRV.clear()
+        SLOW_HOSTS.clear()
+        self.write_log(f"ลองใหม่อัตโนมัติ {len(again)} คลิปที่ล้มเพราะ server "
+                       f"(เหลืออีก {self.auto_retry_left} รอบ)")
+        for it in again:
+            self._reset_item(it)
+        self.save_queue()
+        self.start()
+
     def stop(self):
         if not self.running:
             return
+        self.cancel_auto_retry()
+        self.auto_retry_left = 0  # กดหยุดเองแล้ว ไม่ต้องลองใหม่ให้
         self.stopping = True
         with self.procs_lock:
             procs = list(self.procs.values())
@@ -2684,7 +2991,15 @@ class App(tk.Tk):
                     self.busy_updating = False
                     self.btn_start.configure(state="normal")
                     self.btn_update.configure(state="normal")
-                    self.var_status.set("อัปเดตเสร็จ พร้อมโหลด" if ev[1] == 0 else "อัปเดตเครื่องมือบางตัวไม่สำเร็จ (ดู Log)")
+                    left = missing_tools()
+                    if left:
+                        self.var_status.set("ยังขาด " + ", ".join(left) + " กดปุ่ม อัปเดตเครื่องมือ เพื่อลองใหม่")
+                        messagebox.showwarning(APP_NAME, tr("โหลดเครื่องมือไม่สำเร็จ: ") + ", ".join(left)
+                                               + "\n\n" + tr("เช็คอินเทอร์เน็ตแล้วกดปุ่ม \"อัปเดตเครื่องมือ\" "
+                                                              "หรือจะโหลด zip ชุดเต็มจากหน้า Releases ก็ได้"))
+                    else:
+                        self.var_status.set("อัปเดตเสร็จ พร้อมโหลด" if ev[1] == 0
+                                            else "อัปเดตเครื่องมือบางตัวไม่สำเร็จ (ดู Log)")
         except queue.Empty:
             pass
         if changed:

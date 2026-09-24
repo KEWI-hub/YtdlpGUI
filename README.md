@@ -14,7 +14,7 @@ This app, its `setup.bat` and this README were written with **Claude** (Anthropi
 
 ### Quick start
 
-**Easiest: the all-in-one zip.** On the [Releases](https://github.com/KEWI-hub/YtdlpGUI/releases/latest) page grab **`YtdlpGUI-vX.Y.Z-full.zip`** (about 200 MB), extract it anywhere and double-click `YtdlpGUI.exe`. The tools in `bin\` are already inside, so nothing else has to be installed or downloaded. `YtdlpGUI.exe` on its own is **not** enough: without `bin\` it stops at "yt-dlp.exe not found".
+**Easiest: the all-in-one zip.** On the [Releases](https://github.com/KEWI-hub/YtdlpGUI/releases/latest) page grab **`YtdlpGUI-vX.Y.Z-full.zip`** (about 200 MB), extract it anywhere and double-click `YtdlpGUI.exe`. The tools in `bin\` are already inside, so nothing else has to be installed or downloaded. If you only take `YtdlpGUI.exe`, the app notices that `bin\` is empty on the first run and offers to download the missing tools for you (about 150 MB) - press **Yes** and wait; no `setup.bat` needed.
 
 Or set it up from the repo:
 
@@ -199,7 +199,7 @@ The full guide below is in Thai, including every setting, how each feature works
 
 ## ติดตั้ง (ครั้งแรก)
 
-**ง่ายสุด: โหลด zip ชุดเต็ม** ที่หน้า [Releases](https://github.com/KEWI-hub/YtdlpGUI/releases/latest) เลือกไฟล์ **`YtdlpGUI-vX.Y.Z-full.zip`** (ประมาณ 200MB) แตกไฟล์ไว้ที่ไหนก็ได้ แล้วดับเบิลคลิก `YtdlpGUI.exe` ใช้ได้เลย เครื่องมือใน `bin\` แนบมาให้ครบแล้ว ไม่ต้องโหลดหรือติดตั้งอะไรเพิ่ม — โหลดแค่ `YtdlpGUI.exe` ตัวเดียว**ใช้ไม่ได้** เพราะไม่มี `bin\` จะขึ้นว่า "ไม่เจอ yt-dlp.exe"
+**ง่ายสุด: โหลด zip ชุดเต็ม** ที่หน้า [Releases](https://github.com/KEWI-hub/YtdlpGUI/releases/latest) เลือกไฟล์ **`YtdlpGUI-vX.Y.Z-full.zip`** (ประมาณ 200MB) แตกไฟล์ไว้ที่ไหนก็ได้ แล้วดับเบิลคลิก `YtdlpGUI.exe` ใช้ได้เลย เครื่องมือใน `bin\` แนบมาให้ครบแล้ว ไม่ต้องโหลดหรือติดตั้งอะไรเพิ่ม — ถ้าโหลดมาแค่ `YtdlpGUI.exe` ตัวเดียวก็ได้ เปิดครั้งแรกแอปจะรู้เองว่ายังไม่มี `bin\` แล้วถามว่าจะโหลดเครื่องมือให้เลยไหม (ประมาณ 150MB) กด **Yes** รอสักครู่ก็ใช้ได้เลย ไม่ต้องรัน `setup.bat`
 
 หรือจะติดตั้งจาก repo ก็ได้:
 
@@ -691,6 +691,39 @@ yt-dlp -f "b[ext=mp4][protocol^=http]/b[ext=mp4]" -P PH --no-warnings --recode-v
 ## ประวัติการเปลี่ยนแปลง
 
 เรียงจากใหม่ไปเก่า
+
+### v1.4.3 (2026-09-24) — แอปโหลดเครื่องมือเองได้ + ไม่ค้างกับ server ที่ล่ม
+
+**เปิดใช้ครั้งแรกง่ายขึ้น**
+
+- เปิดแอปครั้งแรกที่ยังไม่มีเครื่องมือใน `bin\` (เช่น โหลดมาแค่ `YtdlpGUI.exe` ตัวเดียว) แอปจะบอกว่าขาดตัวไหน แล้วถามว่าจะโหลดให้เลยไหม กด Yes แล้วรอ ไม่ต้องออกไปรัน `setup.bat` เองอีกแล้ว
+- เลิกขึ้นข้อความ "ไม่เจอ yt-dlp.exe ... setup.bat" แล้วจบเลย ไปต่อไม่ได้
+- กด ▶ เริ่มโหลด ตอนที่ยังขาดเครื่องมือ จะถามให้โหลดเครื่องมือก่อน แทนที่จะเริ่มทั้งที่ไปต่อไม่ได้
+- โหลดเสร็จแล้วเช็คซ้ำอีกที ถ้ายังขาดอยู่จะบอกว่าขาดตัวไหน พร้อมทางแก้ (กดปุ่มอัปเดตเครื่องมือ หรือโหลด zip ชุดเต็ม)
+
+**จำ server ที่ล่มได้ ไม่เสียเวลาซ้ำ**
+
+- CDN ของบางเว็บสลับโดเมนหน้าบ้านไปเรื่อยๆ แต่ใช้เครื่องต้นทางตัวเดิม (`i60k6cbfsa8z.premilkyway.com` กับ `i60k6cbfsa8z.<สุ่ม>.sbs` คือเครื่องเดียวกัน) แอปจึงจำ **รหัสเครื่อง** แทนชื่อโดเมน เจอว่าล่มครั้งเดียว คลิปถัดไปที่ชี้เครื่องเดิมข้ามทันที
+- ก่อนส่งลิงก์ให้ yt-dlp จะลองต่อ TCP ก่อน ให้เวลาเต็ม 60 วินาที (ลองซ้ำเป็นรอบ ไม่ใช่ปล่อยให้ Windows ยอมแพ้เองที่ 21 วินาที) ต่อไม่ติดก็ข้ามไปลิงก์ถัดไป
+- สาเหตุที่บอกชัดขึ้น: **เชื่อมต่อ server วิดีโอไม่ได้**, **server วิดีโอล่ม (HTTP 502/504/520/521/522)**, **Timeout: ต่อ server วิดีโอไม่ติดใน 60 วินาที** แทน "โหลดไม่ได้ (exit 1)" ลอยๆ
+- ขอลิงก์ชุดใหม่จากเว็บเพิ่มจาก 2 เป็น 3 รอบ (แต่ละรอบ CDN สุ่ม host ใหม่)
+
+**ไม่ค้างที่ % เดิมอีก**
+
+- เดิมตัวจับค้างถูกปิดสวิตช์ทุกครั้งที่ yt-dlp พิมพ์บรรทัดที่ไม่ใช่ progress (เช่น "Retrying fragment") ทำให้คลิปค้างได้เป็นชั่วโมงโดยไม่มีใครตัด ตอนนี้ถ้าไบต์ไม่เพิ่มเกิน 4 นาทีถือว่าค้างแน่ ไม่สนว่าพิมพ์อะไรอยู่ (ยกเว้นช่วงรวมไฟล์/แปลง ที่ไบต์ไม่เพิ่มเป็นเรื่องปกติ)
+- ไม่มี % ออกมาเลยเกิน 3 นาที = ไม่ได้เริ่มโหลดจริง เลิกแล้วเปลี่ยน server ทันที ไม่วนรันคำสั่งเดิมซ้ำ
+- ตัดแล้วโหลดต่อ 2 รอบติดยังได้ข้อมูลเพิ่มไม่ถึง 1 MiB = เลิกกับ server นี้ ไปลองตัวถัดไป (เดิมวนครบ 5 รอบ ~20 นาที)
+
+**ลองใหม่ให้เองเมื่อคิวหมด**
+
+- จบคิวแล้วรอ 2 นาที (ให้ server มีเวลาฟื้น) แล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เอง สูงสุด 3 รอบ ก่อนแต่ละรอบจะลืม server ที่เคยล่มทั้งหมด เผื่อกลับมาแล้ว
+- คลิปที่ล้มแบบถาวร (เว็บลบไปแล้ว / หน้าหาย / หาลิงก์ไม่เจอ / player ถูกปล่อยทิ้ง) ไม่เอามาลองซ้ำให้เสียเวลา
+- กดหยุดเอง = ไม่ลองใหม่ให้ · ถ้าจังหวะนั้นแอปติดอัปเดตเครื่องมืออยู่ จะเลื่อนไป ไม่ทิ้งรอบ
+- ปรับได้ที่ `settings.json`: `auto_retry` (จำนวนรอบ 0–20, ค่าเริ่มต้น 3) และ `auto_retry_wait` (วินาที 10–3600, ค่าเริ่มต้น 120)
+
+**อื่นๆ**
+
+- player บางเจ้าไม่ตอบอะไรเลยให้ตัวอ่านหน้าเว็บ เดิมแอปจะไม่เรียก Chrome ต่อเลย ตอนนี้เรียกให้ (ใช้เวลาไม่เกิน 25 วินาทีสำหรับเจ้าที่เงียบ)
 
 ### 2026-09-24 — zip ชุดเต็มใน Release (ไม่เปลี่ยนเวอร์ชันแอป)
 

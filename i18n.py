@@ -204,6 +204,68 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "player ของคลิปนี้ถูกปล่อยทิ้งแล้ว (เด้งไปหน้าโฆษณา)":
+        "this clip's player host was abandoned (it now redirects to ads)",
+    "เลิกให้วิดีโอแล้ว (เด้งไปหน้าโฆษณา)":
+        "no longer serves video (it redirects to ads)",
+    "player ของคลิปนี้ถูกปล่อยทิ้งแล้ว":
+        "this clip's player host was abandoned",
+    "ไม่มีไฟล์ให้โหลด (เบราว์เซอร์ก็เล่นไม่ได้)":
+        "there is no file to download (a browser cannot play it either)",
+    "server ที่เก็บคลิปนี้ล่มอยู่ (จะลองใหม่ให้อัตโนมัติ)":
+        "the server holding this clip is down (will retry automatically)",
+    "เครื่องต้นทางที่เก็บคลิปนี้ล่มอยู่ จะลองใหม่ให้อัตโนมัติเมื่อคิวหมด":
+        "the origin server for this clip is down, it will be retried automatically when the queue empties",
+    "เครื่องต้นทางล่ม": "the origin server is down",
+    "จำไว้แล้ว จะไม่ลองเครื่องนี้ซ้ำรอบนี้":
+        "remembered, this server will not be tried again this run",
+    "จำไว้แล้ว จะไม่ลองเครื่องนี้ซ้ำ":
+        "remembered, this server will not be tried again",
+    "เครื่องต้นทาง": "origin server",
+    "ใช้ไม่ได้ (เจอมาแล้วรอบนี้)": "unusable (already seen this run)",
+    "server ไม่ส่งข้อมูลมาเลย (ค้างที่ 0% เกิน":
+        "the server sent no data at all (stuck at 0% for over",
+    "ไม่ส่งข้อมูลมาเลยใน": "sent no data at all within",
+    "(ค้างที่ 0%) เลิกแล้วไปลอง server อื่น":
+        "(stuck at 0%), giving up and trying another server",
+    "ลองใหม่อัตโนมัติ": "retrying automatically",
+    "คลิปที่ล้มเพราะ server": "clips that failed because of the server",
+    "(เหลืออีก": "(", "รอบ)": "rounds left)",
+    "คิวหมดแล้ว มี": "the queue is empty, there are",
+    "จะลองใหม่ให้เองในอีก": "will retry automatically in",
+    "จะลองใหม่": "will retry",
+    "ในอีก": "in",
+    "นาที": "minutes",
+    "Timeout: ต่อ server วิดีโอไม่ติดใน":
+        "Timeout: could not connect to the video server within",
+    "เชื่อมต่อ server วิดีโอไม่ได้":
+        "Cannot connect to the video server",
+    "server วิดีโอล่ม": "the video server is down",
+    "ต่อ server วิดีโอไม่ติดใน":
+        "could not connect to the video server within",
+    "กำลังต่อ server": "connecting to server",
+    "ข้าม server": "skipping server",
+    "ต่อไม่ติด (เจอมาแล้วรอบนี้)":
+        "unreachable (already seen this run)",
+    "จำไว้แล้ว จะไม่ลอง host นี้ซ้ำ":
+        "remembered, this host will not be tried again",
+    "ข้ามไปตัวถัดไป": "skipping to the next one",
+    "แอปยังใช้งานไม่ได้ เพราะยังไม่มีเครื่องมือเหล่านี้ใน bin\\":
+        "The app cannot run yet: these tools are missing from bin\\",
+    "(กด No ถ้าจะไปโหลด zip ชุดเต็มจากหน้า Releases เอง)":
+        "(choose No if you would rather grab the all-in-one zip from the Releases page)",
+    "จะโหลดให้เลยไหม (ประมาณ": "Download them now? (about",
+    "ยังไม่มีเครื่องมือใน bin\\: ": "tools missing from bin\\: ",
+    " กำลังโหลดให้ ...": " downloading them now ...",
+    "ยังโหลดคลิปไม่ได้ ต้องมีเครื่องมือใน bin\\ ก่อน": "Cannot download yet: bin\\ needs the tools first",
+    "ข้ามการโหลดเครื่องมือ กดปุ่ม \"อัปเดตเครื่องมือ\" เมื่อพร้อมโหลด":
+        "skipped the tool download, press \"Update tools\" when you are ready",
+    "กำลังโหลดเครื่องมือที่ยังไม่มี ...": "Downloading the missing tools ...",
+    "โหลดเครื่องมือไม่สำเร็จ: ": "Could not download these tools: ",
+    "เช็คอินเทอร์เน็ตแล้วกดปุ่ม \"อัปเดตเครื่องมือ\" หรือจะโหลด zip ชุดเต็มจากหน้า Releases ก็ได้":
+        "Check your internet and press \"Update tools\", or download the all-in-one zip from the Releases page",
+    "ยังขาด ": "Still missing ",
+    " กดปุ่ม อัปเดตเครื่องมือ เพื่อลองใหม่": " - press Update tools to try again",
     "Timeout: server ไม่ตอบใน": "Timeout: the server did not answer within",
     "server ไม่ตอบเลยใน": "the server never answered within",
     "(ลองโหลดคลิปนี้ด้วยโปรแกรมอื่นแทน)": "(try another downloader for this clip)",
