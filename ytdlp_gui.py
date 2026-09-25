@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.5"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.6"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -193,6 +193,9 @@ def is_page_site(url):
 
 CHALLENGE_TITLES = ("just a moment", "attention required", "please wait", "checking your browser",
                     "เพียงสักครู่", "โปรดรอสักครู่")
+ADBLOCK_DIR = os.path.join(APP_DIR, "_browser_ext", "ubol")  # uBlock Origin Lite (โหลดมาเองตอนใช้ครั้งแรก)
+UBOL_API = "https://api.github.com/repos/uBlockOrigin/uBOL-home/releases/latest"
+_adblock_tried = [False]
 BROWSER_DIR = os.path.join(APP_DIR, "_browser")
 CHROME_PATHS = [
     os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
@@ -314,6 +317,29 @@ def fetch_page_simple(url, timeout=WEB_TIMEOUT):
         return ""
 
 
+def ensure_adblock():
+    """โหลด uBlock Origin Lite มาไว้ใน _browser_ext\\ ครั้งแรกที่ต้องเปิด Chrome
+    หน้าเว็บพวกนี้มีโฆษณาเด้งเยอะ บล็อกไว้ทั้งเร็วขึ้นและไม่มีแท็บแปลกๆ เด้งใส่ผู้ใช้
+    คืนโฟลเดอร์ที่ใช้ได้ หรือค่าว่างถ้าโหลดไม่สำเร็จ (ไม่สำเร็จก็แค่เปิด Chrome แบบไม่มีตัวบล็อก)"""
+    if os.path.isfile(os.path.join(ADBLOCK_DIR, "manifest.json")):
+        return ADBLOCK_DIR
+    if _adblock_tried[0]:
+        return ""
+    _adblock_tried[0] = True
+    try:
+        import io
+        import zipfile
+        data = json.loads(github_get(UBOL_API))
+        asset = next(a for a in data.get("assets", []) if a["name"].endswith("chromium.zip"))
+        blob = github_get(asset["browser_download_url"], accept="application/octet-stream", timeout=180)
+        os.makedirs(ADBLOCK_DIR, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            z.extractall(ADBLOCK_DIR)
+        return ADBLOCK_DIR if os.path.isfile(os.path.join(ADBLOCK_DIR, "manifest.json")) else ""
+    except Exception:
+        return ""
+
+
 def find_chrome():
     return next((p for p in CHROME_PATHS if os.path.isfile(p)), "")
 
@@ -352,6 +378,9 @@ def fetch_page_chrome(url, visible=False, timeout=60, js=None):
             "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled", f"--user-agent={_ua_cache[chrome]}",
             "--window-size=1100,850"]
+    adblock = ensure_adblock()
+    if adblock:
+        args += [f"--disable-extensions-except={adblock}", f"--load-extension={adblock}"]
     if not visible:
         args += ["--headless=new", "--mute-audio"]
     args.append(url)
@@ -530,6 +559,24 @@ def is_parked(embed, final):
     return True
 
 
+JAVPLAYER_RE = re.compile(r"^https?://([^/]+)/e/([a-z0-9_-]+)", re.I)
+
+
+def javplayer_media(embed):
+    """player ตระกูล javplayer.cc: หน้า embed เป็นหน้าเปล่า ลิงก์จริงขอจาก /stream?id=<id>
+    (ดูได้จาก embed-*.js ของเว็บ: fetch(buildStreamUrl(hashId)) -> {"media": {"stream": ...}})"""
+    m = JAVPLAYER_RE.match(embed or "")
+    if not m:
+        return []
+    api = f"https://{m.group(1)}/stream?id={m.group(2)}"
+    try:
+        data = json.loads(fetch_with_referer(api, embed) or "{}")
+    except ValueError:
+        return []
+    media = (data.get("media") or {}) if isinstance(data, dict) else {}
+    return [media[k] for k in ("stream", "file", "url") if isinstance(media.get(k), str)]
+
+
 def resolve_embed_links(embed, referer, depth=0):
     """เปิดหน้า player ของแต่ละ server หาลิงก์ m3u8/mp4 ถ้าไม่เจอให้ตาม iframe ที่ซ้อนอยู่ข้างในอีกชั้น
     คืนค่า ([ลิงก์วิดีโอ เรียงตัวที่ควรใช้ก่อน], หน้าที่ใช้เป็น referer, คลิปถูกลบไปแล้วหรือไม่)"""
@@ -538,7 +585,7 @@ def resolve_embed_links(embed, referer, depth=0):
     if url_host(embed) in PARKED_PLAYERS:  # รู้แล้วว่า player เจ้านี้เลิกให้วิดีโอ ไม่ต้องเสียเวลาเปิดซ้ำ
         return [], embed, False
     page = fetch_with_referer(embed, referer)
-    media = find_media_all(page, embed)
+    media = find_media_all(page, embed) or javplayer_media(embed)
     if media:
         return media, embed, False
     if page and DEAD_RE.search(page):
@@ -601,6 +648,29 @@ BTN_SERVER_RE = re.compile(r'<a[^>]*class="btn-server[^"]*"[^>]*data-link="([^"]
 SUPJAV_JUMP = "https://lk1.supremejav.com/supjav.php?c="
 
 
+# 123av: หน้าเว็บฝังรายชื่อตอน/player ไว้ใน x-data="player(JSON.parse('[...]'), ...)"
+XDATA_RE = re.compile(r"""x-data=["']player\(JSON\.parse\('(.*?)'\)""", re.S)
+
+
+def xdata_servers(page):
+    """server ที่ฝังมาเป็น JSON ในหน้าเว็บ (123av) คืน [(ชื่อตอน, หน้า player)]"""
+    m = XDATA_RE.search(page or "")
+    if not m:
+        return []
+    # ค่าใน attribute ถูก escape สองชั้น (JSON ซ้อนใน string ของ JS): " คือเครื่องหมายคำพูด, \\/ คือ /
+    raw = m.group(1).replace("\\u0022", '"').replace("\\\\/", "/")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    out = []
+    for d in data if isinstance(data, list) else []:
+        u = (d.get("url") or "").split("?")[0]
+        if u.startswith("http"):
+            out.append((f"ตอน {d.get('name') or len(out) + 1}", u))
+    return out
+
+
 def btn_servers(page):
     """server ที่ซ่อนอยู่ในปุ่ม (supjav) คืน [(ชื่อบนปุ่ม, หน้า player)]"""
     out = []
@@ -621,7 +691,7 @@ def get_servers(url, page, notify=None):
             return [tuple(x) for x in json.loads(raw)]
         except (ValueError, TypeError):
             return []
-    out = btn_servers(page)
+    out = btn_servers(page) + xdata_servers(page)
     for i, f in enumerate(IFRAME_RE.findall(page)):
         if f.startswith("//"):
             f = "https:" + f
@@ -1530,6 +1600,8 @@ class App(tk.Tk):
         self.auto_retry_max = max(0, min(20, int(s.get("auto_retry", AUTO_RETRY_MAX) or 0)))
         self.auto_retry_wait = max(10, min(3600, int(s.get("auto_retry_wait", AUTO_RETRY_WAIT) or AUTO_RETRY_WAIT)))
         self.auto_retry_left = self.auto_retry_max  # เหลือลองใหม่อัตโนมัติอีกกี่รอบ
+        self.var_retry_on = tk.BooleanVar(value=self.auto_retry_max > 0)
+        self.var_retry_n = tk.IntVar(value=self.auto_retry_max or AUTO_RETRY_MAX)
         self.retry_timer = None
         self.title_queue = queue.Queue()
         self.cancelled = set()  # id ของคลิปที่ผู้ใช้เอาติ๊กแปลงออกระหว่างแปลง
@@ -1676,6 +1748,18 @@ class App(tk.Tk):
         ttk.Label(r1b, text="ชื่อไฟล์ยาวสุด:").pack(side="left", padx=(12, 0))
         ttk.Spinbox(r1b, from_=30, to=150, increment=5, textvariable=self.var_name_max, width=4).pack(side="left", padx=4)
         ttk.Checkbutton(r1b, text="เช็คอัปเดตตอนเปิด", variable=self.var_update).pack(side="right")
+
+        r1c = ttk.Frame(opt)
+        r1c.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Checkbutton(r1c, text="คิวหมดแล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เอง",
+                        variable=self.var_retry_on, command=self._sync_retry).pack(side="left")
+        ttk.Label(r1c, text="กี่รอบ:").pack(side="left", padx=(12, 0))
+        self.spn_retry = ttk.Spinbox(r1c, from_=1, to=10, textvariable=self.var_retry_n, width=4,
+                                     state="readonly")
+        self.spn_retry.pack(side="left", padx=4)
+        ttk.Label(r1c, text=f"(เว้นรอบละ {AUTO_RETRY_WAIT // 60} นาที คลิปที่ตายจริงไม่เอามาลองซ้ำ)"
+                  ).pack(side="left", padx=(8, 0))
+        self._sync_retry()
 
         conv = ttk.LabelFrame(self, text="ตั้งค่าการแปลง H.265 (ใช้กับคลิปที่ติ๊ก ☑ ในช่อง \"แปลง\")")
         conv.pack(fill="x", padx=8, pady=4)
@@ -2151,7 +2235,7 @@ class App(tk.Tk):
             "auto_clear": self.var_auto_clear.get(), "max_pages": to_int(self.var_max_pages, 5, 1, 50),
             "max_dl": to_int(self.var_max_dl, 3, 1, 8), "max_conv": to_int(self.var_max_conv, 1, 1, 4),
             "frags": to_int(self.var_frags, 16, 1, 32), "name_max": to_int(self.var_name_max, NAME_MAX, 30, 150),
-            "auto_retry": self.auto_retry_max, "auto_retry_wait": self.auto_retry_wait,
+            "auto_retry": self.retry_rounds(), "auto_retry_wait": self.auto_retry_wait,
         })
 
     def browse_out(self):
@@ -2392,6 +2476,7 @@ class App(tk.Tk):
         if self.running or self.busy_updating:
             return
         self.cancel_auto_retry()
+        self.auto_retry_max = self.retry_rounds()
         self.auto_retry_left = self.auto_retry_max  # กดเริ่มเองคือเริ่มนับใหม่
         missing = missing_tools()
         if missing:
@@ -2790,7 +2875,7 @@ class App(tk.Tk):
                                             f"(ลองโหลดคลิปนี้ด้วยโปรแกรมอื่นแทน)"))
                     return SLOW_SERVER
                 if conn_fail[0]:
-                    self.events.put(("log", f"[#{item_id}] ต่อ server วิดีโอไม่ติดใน {WEB_TIMEOUT} วินาที "
+                    self.events.put(("log", f"[#{item_id}] ต่อ server วิดีโอไม่ติด "
                                             f"(ลองโหลดคลิปนี้ด้วยโปรแกรมอื่นแทน)"))
                     return CONN_FAIL
                 if srv_down[0]:
@@ -2843,7 +2928,7 @@ class App(tk.Tk):
                   DEAD_CLIP: "เว็บลบคลิปนี้ไปแล้ว",
                   PAGE_GONE: "หน้าคลิปนี้ไม่มีบนเว็บแล้ว",
                   SLOW_SERVER: f"Timeout: server ไม่ตอบใน {WEB_TIMEOUT} วินาที",
-                  CONN_FAIL: f"Timeout: ต่อ server วิดีโอไม่ติดใน {WEB_TIMEOUT} วินาที",
+                  CONN_FAIL: "Timeout: ต่อ server วิดีโอไม่ติด",
                   SRV_DOWN: "server ที่เก็บคลิปนี้ล่มอยู่ (จะลองใหม่ให้อัตโนมัติ)",
                   PLAYER_GONE: "player ของคลิปนี้ถูกปล่อยทิ้งแล้ว (เด้งไปหน้าโฆษณา)",
                   PREVIEW_ONLY: "เจอแต่คลิปตัวอย่าง ไม่ใช่ตัวเต็ม"
@@ -2920,6 +3005,14 @@ class App(tk.Tk):
                 subprocess.run(args, creationflags=NO_WINDOW, capture_output=True, timeout=20)
             except (OSError, subprocess.SubprocessError):
                 pass
+
+    def _sync_retry(self):
+        """ปิดสวิตช์ลองใหม่อัตโนมัติ = ช่องจำนวนรอบใช้ไม่ได้"""
+        self.spn_retry.configure(state="readonly" if self.var_retry_on.get() else "disabled")
+
+    def retry_rounds(self):
+        """จำนวนรอบที่จะลองใหม่ให้เอง ตามที่ตั้งไว้ในหน้าจอ (0 = ไม่ลองให้)"""
+        return to_int(self.var_retry_n, AUTO_RETRY_MAX, 1, 10) if self.var_retry_on.get() else 0
 
     def cancel_auto_retry(self):
         if self.retry_timer:

@@ -12,6 +12,7 @@ __pycache__/
 
 # ข้อมูลส่วนตัวของผู้ใช้ ห้ามอัปขึ้น
 _browser/
+_browser_ext/
 settings.json
 queue.json
 _tmp/

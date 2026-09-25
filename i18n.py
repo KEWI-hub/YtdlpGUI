@@ -204,6 +204,12 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "คิวหมดแล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เอง":
+        "When the queue empties, retry clips that failed because of the server",
+    "กี่รอบ:": "rounds:",
+    "Timeout: ต่อ server วิดีโอไม่ติด": "Timeout: cannot connect to the video server",
+    "ต่อ server วิดีโอไม่ติด": "cannot connect to the video server",
+    "ตอน ": "episode ",
     "ไฟล์ไม่มีอยู่แล้ว (404/410) ไม่ต้องลองรอบใหม่":
         "the file is gone (404/410), no point trying again",
     "เจอแต่คลิปตัวอย่าง ไม่ใช่ตัวเต็ม": "Only a preview clip, not the full video",
