@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.7"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.8"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -1636,7 +1636,7 @@ class App(tk.Tk):
             if isinstance(it, dict) and it.get("url"):
                 if self._add_item(it["url"], it.get("title", ""), save=False, file=it.get("file", ""),
                                   convert=bool(it.get("convert", False)), subdir=it.get("subdir", ""),
-                                  referer=it.get("referer", "")):
+                                  referer=it.get("referer", ""), height=int(it.get("height") or 0)):
                     self.items[-1]["custom_title"] = bool(it.get("custom_title", False))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.tray = None
@@ -1901,7 +1901,7 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     # ---------- queue ----------
-    def _add_item(self, url, title="", save=True, file="", convert=False, subdir="", referer=""):
+    def _add_item(self, url, title="", save=True, file="", convert=False, subdir="", referer="", height=0):
         """คืน True ถ้าเพิ่มเข้าคิว, False ถ้าซ้ำกับคลิปที่อยู่ในคิวแล้ว"""
         key = url_key(url)
         dup = next((i for i in self.items if i["key"] == key), None)
@@ -1910,7 +1910,7 @@ class App(tk.Tk):
             return False
         it = {"id": next(self.ids), "url": url, "key": key, "title": title, "status": WAIT, "progress": "",
               "file": "", "convert": convert, "converted": False, "cancel_conv": False, "force": False,
-              "subdir": subdir, "referer": referer}
+              "subdir": subdir, "referer": referer, "height": height}
         if file and os.path.isfile(file):
             it["file"] = file
             if convert:
@@ -2239,7 +2239,7 @@ class App(tk.Tk):
     def save_queue(self):
         save_json(QUEUE_FILE, [{"url": it["url"], "title": it["title"], "convert": it["convert"],
                                 "custom_title": it.get("custom_title", False), "subdir": it.get("subdir", ""),
-                                "referer": it.get("referer", ""),
+                                "referer": it.get("referer", ""), "height": it.get("height", 0),
                                 "file": it["file"] if it["status"] in (WAIT_CONV, CONV) else ""}
                                for it in self.items if it["status"] not in (DONE, HAVE)])
 
@@ -2539,7 +2539,8 @@ class App(tk.Tk):
                     threading.Thread(target=self._download_job,
                                      args=(it["id"], it["url"], dict(self.opts, force=it["force"], name=name,
                                                                      stem=stem, out=self._dest(it),
-                                                                     ref=it.get("referer", ""))),
+                                                                     ref=it.get("referer", ""),
+                                                                     res=it.get("height") or self.opts.get("res", 0))),
                                      daemon=True).start()
             for it in self.items:
                 if self.active_conv >= max_conv:
@@ -3179,8 +3180,14 @@ class App(tk.Tk):
                         self.write_log(f"Extension ดักลิงก์วิดีโอมาให้ {len(media)} ลิงก์ (โหลดตรงไม่ต้องแกะหน้าเว็บ)")
                         for m in media:
                             ref = m.get("referer") or ""
+                            try:
+                                h = max(0, min(4320, int(m.get("height") or 0)))
+                            except (TypeError, ValueError):
+                                h = 0
                             if self._add_item(m["url"], (m.get("title") or "").strip(), save=False,
-                                              referer=ref if ref.startswith("http") else ""):
+                                              referer=ref if ref.startswith("http") else "", height=h):
+                                if h:
+                                    self.write_log(f"[{m.get('title') or m['url'][:40]}] เลือกความชัด {h}p")
                                 self.items[-1]["custom_title"] = bool(m.get("title"))
                         self.save_queue()
                     if urls:

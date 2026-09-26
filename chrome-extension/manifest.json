@@ -1,17 +1,18 @@
 {
   "manifest_version": 3,
   "name": "YtdlpGUI Downloader",
-  "version": "1.1.0",
-  "description": "Send the current page, a link, or the video the page is playing to YtdlpGUI and start downloading right away.",
-  "permissions": ["activeTab", "contextMenus", "notifications", "webRequest"],
+  "version": "1.2.0",
+  "description": "Send the current page, a link, or the video the page is playing to YtdlpGUI - and pick the resolution before it downloads.",
+  "permissions": ["activeTab", "contextMenus", "notifications", "webRequest", "tabs"],
   "host_permissions": ["http://127.0.0.1:47777/*", "http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
   "action": {
-    "default_title": "Download with YtdlpGUI (Alt+Shift+D)",
+    "default_title": "YtdlpGUI: pick a video to download (Alt+Shift+D)",
+    "default_popup": "popup.html",
     "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png" }
   },
   "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "commands": {
-    "_execute_action": { "suggested_key": { "default": "Alt+Shift+D" }, "description": "Download with YtdlpGUI" }
+    "_execute_action": { "suggested_key": { "default": "Alt+Shift+D" }, "description": "Open the YtdlpGUI download menu" }
   }
 }
