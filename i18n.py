@@ -204,6 +204,11 @@ EN = {
     "เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้": "Could not open the Chrome Extension port",
     "ชื่อไฟล์ยาวสุด": "Max file name",
     "เคยโหลดแล้ว": "Downloaded before",
+    "Extension ดักลิงก์วิดีโอมาให้": "The extension captured video links:",
+    "ลิงก์ (โหลดตรงไม่ต้องแกะหน้าเว็บ)":
+        "links (downloaded directly, no page scraping needed)",
+    "ลิงก์จาก Extension โหลดตรงเลย (referer:":
+        "link from the extension, downloading it directly (referer:",
     "คิวหมดแล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เอง":
         "When the queue empties, retry clips that failed because of the server",
     "กี่รอบ:": "rounds:",

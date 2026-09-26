@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.6"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.7"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -560,6 +560,8 @@ def is_parked(embed, final):
 
 
 JAVPLAYER_RE = re.compile(r"^https?://([^/]+)/e/([a-z0-9_-]+)", re.I)
+# หน้า player บางเว็บเป็นแค่ตัวส่งต่อ: <script>location.replace("หน้าจริง")</script>
+JS_REDIR_RE = re.compile(r"""location\.(?:replace\s*\(|href\s*=\s*)\s*['"](https?://[^'"]+)['"]""", re.I)
 
 
 def javplayer_media(embed):
@@ -593,6 +595,10 @@ def resolve_embed_links(embed, referer, depth=0):
     if page and PARKED_PAGE_RE.search(page):
         PARKED_PLAYERS.add(url_host(embed))
         return [], embed, False
+    jump = JS_REDIR_RE.search(page or "")
+    if jump and depth < 3 and url_host(jump.group(1)) != url_host(embed):
+        # หน้านี้เป็นแค่ตัวส่งต่อด้วย JavaScript ตามไปหน้าจริงต่อ (อ่าน HTML เฉยๆ จะไม่มีวันเจอลิงก์)
+        return resolve_embed_links(jump.group(1), embed, depth + 1)
     if (not page or (len(page) < 4000 and not IFRAME_RE.search(page))) and find_chrome() \
             and url_host(embed) not in EMPTY_PLAYERS:
         # หน้าเปล่าๆ ที่ขึ้นว่า "Loading..." = ตัวเว็บใช้ JavaScript พาไปหน้า player จริง ให้ Chrome รันให้
@@ -893,6 +899,8 @@ def expand_listing(url, notify=None, stop=lambda: False, max_pages=MAX_LISTING_P
 # ตัวเล่นวิดีโอบางเจ้า (jwplayer) เก็บลิงก์ไว้หลายตัวใน links = {"hls2":..,"hls3":..,"hls4":..}
 # แล้วเล่นจาก hls4 ก่อน ตัวท้ายๆ เร็วกว่าตัวแรกมาก (hls2 มักโดนจำกัดความเร็ว sp=500)
 LINKS_RE = re.compile(r"""links\s*=\s*(\{[^{}]{0,4000}?\})""")
+# ค่า file: ในการตั้งค่า player (jwplayer/videojs) เป็นลิงก์ที่ player เลือกใช้เอง เชื่อถือได้กว่าลิงก์ลอยๆ ในหน้า
+FILE_RE = re.compile(r"""['"]?file['"]?\s*:\s*['"](https?://[^'"\s]+)['"]""", re.I)
 
 
 def player_links(text, base=""):
@@ -917,6 +925,10 @@ def find_media_all(page, base=""):
     """ลิงก์วิดีโอทุกตัวที่เจอในหน้า เรียงตัวที่ควรใช้ก่อน (ลิงก์ของ player ก่อน แล้วค่อยลิงก์อื่นในหน้า)"""
     text = (page + "\n" + unpack_js(page)).replace("\\/", "/")
     out = []
+    for u in FILE_RE.findall(text):
+        # .txt คือ m3u8 ที่เปลี่ยนนามสกุล บาง server ใช้กันโดนบล็อก
+        if re.search(r"\.(m3u8|mp4|txt)(\?|$)", u, re.I) and u not in out:
+            out.append(u)
     for u in player_links(text, base):
         # .txt คือ m3u8 ที่เปลี่ยนนามสกุล บาง server ใช้กันโดนบล็อก
         if re.search(r"\.(m3u8|mp4|txt)(\?|$)", u, re.I) and u not in out:
@@ -1528,12 +1540,15 @@ def start_extension_server(on_urls):
                 n = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(min(n, 1 << 20)) or b"{}")
                 urls = [u for u in data.get("urls", []) if isinstance(u, str) and u.startswith(("http://", "https://"))]
+                # media: ลิงก์วิดีโอที่ extension ดักได้จากหน้าที่ผู้ใช้เปิด (พร้อม referer/ชื่อคลิป)
+                media = [m for m in data.get("media", [])
+                         if isinstance(m, dict) and str(m.get("url", "")).startswith(("http://", "https://"))][:50]
             except (ValueError, AttributeError):
                 return self._reply(400, {"ok": False})
-            if not urls:
+            if not urls and not media:
                 return self._reply(400, {"ok": False, "error": "no http(s) url"})
-            on_urls(urls[:500], bool(data.get("start", True)))
-            self._reply(200, {"ok": True, "received": len(urls)})
+            on_urls(urls[:500], bool(data.get("start", True)), media)
+            self._reply(200, {"ok": True, "received": len(urls) + len(media)})
 
     srv = ThreadingHTTPServer(("127.0.0.1", EXT_PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -1620,7 +1635,8 @@ class App(tk.Tk):
         for it in load_json(QUEUE_FILE, []):
             if isinstance(it, dict) and it.get("url"):
                 if self._add_item(it["url"], it.get("title", ""), save=False, file=it.get("file", ""),
-                                  convert=bool(it.get("convert", False)), subdir=it.get("subdir", "")):
+                                  convert=bool(it.get("convert", False)), subdir=it.get("subdir", ""),
+                                  referer=it.get("referer", "")):
                     self.items[-1]["custom_title"] = bool(it.get("custom_title", False))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.tray = None
@@ -1628,7 +1644,8 @@ class App(tk.Tk):
         self._setup_tray()
         self.autostart = False  # ลิงก์จาก extension: เริ่มโหลดให้เองเมื่อพร้อม
         try:
-            self.ext_server = start_extension_server(lambda urls, go: self.events.put(("ext_add", urls, go)))
+            self.ext_server = start_extension_server(
+                lambda urls, go, media=(): self.events.put(("ext_add", urls, go, list(media))))
         except OSError as e:
             self.ext_server = None
             self.write_log(f"เปิดช่องรับลิงก์จาก Chrome Extension ไม่ได้ (port {EXT_PORT}): {e}")
@@ -1884,7 +1901,7 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     # ---------- queue ----------
-    def _add_item(self, url, title="", save=True, file="", convert=False, subdir=""):
+    def _add_item(self, url, title="", save=True, file="", convert=False, subdir="", referer=""):
         """คืน True ถ้าเพิ่มเข้าคิว, False ถ้าซ้ำกับคลิปที่อยู่ในคิวแล้ว"""
         key = url_key(url)
         dup = next((i for i in self.items if i["key"] == key), None)
@@ -1893,7 +1910,7 @@ class App(tk.Tk):
             return False
         it = {"id": next(self.ids), "url": url, "key": key, "title": title, "status": WAIT, "progress": "",
               "file": "", "convert": convert, "converted": False, "cancel_conv": False, "force": False,
-              "subdir": subdir}
+              "subdir": subdir, "referer": referer}
         if file and os.path.isfile(file):
             it["file"] = file
             if convert:
@@ -2222,6 +2239,7 @@ class App(tk.Tk):
     def save_queue(self):
         save_json(QUEUE_FILE, [{"url": it["url"], "title": it["title"], "convert": it["convert"],
                                 "custom_title": it.get("custom_title", False), "subdir": it.get("subdir", ""),
+                                "referer": it.get("referer", ""),
                                 "file": it["file"] if it["status"] in (WAIT_CONV, CONV) else ""}
                                for it in self.items if it["status"] not in (DONE, HAVE)])
 
@@ -2520,7 +2538,8 @@ class App(tk.Tk):
                                      self.opts.get("name_max", NAME_MAX)) if it["title"] else ""
                     threading.Thread(target=self._download_job,
                                      args=(it["id"], it["url"], dict(self.opts, force=it["force"], name=name,
-                                                                     stem=stem, out=self._dest(it))),
+                                                                     stem=stem, out=self._dest(it),
+                                                                     ref=it.get("referer", ""))),
                                      daemon=True).start()
             for it in self.items:
                 if self.active_conv >= max_conv:
@@ -2898,7 +2917,15 @@ class App(tk.Tk):
                     return SRV_DOWN
             return rc
 
-        if is_page_site(url) or url_host(url) in NO_YTDLP_HOSTS:
+        if opts.get("ref"):
+            # ลิงก์วิดีโอที่ Chrome Extension ดักมาจากหน้าที่ผู้ใช้เปิดอยู่ (แบบเดียวกับที่ IDM ทำ)
+            # ต้องส่ง referer/origin เดิมไปด้วย ไม่งั้น CDN ส่วนใหญ่ตอบ 403
+            ref = opts["ref"]
+            origin = re.match(r"https?://[^/]+", ref).group(0)
+            self.events.put(("log", f"[#{item_id}] ลิงก์จาก Extension โหลดตรงเลย (referer: {url_host(ref)})"))
+            rc, out = attempt_lower(url, ["--impersonate", "chrome", "--referer", ref,
+                                          "--add-headers", f"Origin:{origin}"], aria=False)
+        elif is_page_site(url) or url_host(url) in NO_YTDLP_HOSTS:
             rc = via_page()
         else:
             rc, out = attempt_lower(url)
@@ -3147,8 +3174,17 @@ class App(tk.Tk):
                         self._refresh(it)
                     changed = True
                 elif kind == "ext_add":
-                    _, urls, go = ev
-                    self.write_log(f"รับลิงก์จาก Chrome Extension {len(urls)} ลิงก์")
+                    _, urls, go, media = ev
+                    if media:
+                        self.write_log(f"Extension ดักลิงก์วิดีโอมาให้ {len(media)} ลิงก์ (โหลดตรงไม่ต้องแกะหน้าเว็บ)")
+                        for m in media:
+                            ref = m.get("referer") or ""
+                            if self._add_item(m["url"], (m.get("title") or "").strip(), save=False,
+                                              referer=ref if ref.startswith("http") else ""):
+                                self.items[-1]["custom_title"] = bool(m.get("title"))
+                        self.save_queue()
+                    if urls:
+                        self.write_log(f"รับลิงก์จาก Chrome Extension {len(urls)} ลิงก์")
                     self.add_urls("\n".join(urls))
                     if go:
                         # ลิงก์ที่ส่งมาซ้ำกับแถวที่ล้มเหลวไว้ ให้กลับไปรอโหลดใหม่
