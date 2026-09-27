@@ -2,6 +2,8 @@
 
 **[English](#english)** · **[ภาษาไทย](#ภาษาไทย)**
 
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/kewiv) · สนับสนุนผู้พัฒนาที่ [ko-fi.com/kewiv](https://ko-fi.com/kewiv)
+
 > Built with [Claude](https://claude.ai) (Anthropic) · สร้างด้วย Claude
 
 ---
@@ -163,6 +165,11 @@ Every time the app starts (when "เช็คอัปเดตตอนเป�
 
 The full guide below is in Thai, including every setting, how each feature works, the cmd usage of yt-dlp and the changelog.
 
+### Support
+
+This app is free and always will be. If it saved you time, you can buy me a coffee at
+**[ko-fi.com/kewiv](https://ko-fi.com/kewiv)** - entirely optional, and nothing in the app is locked behind it.
+
 ---
 
 ## ภาษาไทย
@@ -171,6 +178,8 @@ The full guide below is in Thai, including every setting, how each feature works
 
 โปรแกรมโหลดวิดีโอแบบมีหน้าต่าง ใช้ [yt-dlp](https://github.com/yt-dlp/yt-dlp) อยู่เบื้องหลัง
 ใส่ลิงก์เข้าคิว โหลดพร้อมกันได้หลายลิงก์ และแปลงเป็น H.265 ด้วยการ์ดจอให้อัตโนมัติ
+
+ใช้ฟรีทั้งหมด ไม่มีฟีเจอร์ไหนถูกล็อกไว้ ถ้าถูกใจและอยากสนับสนุนค่ากาแฟ เชิญที่ **[ko-fi.com/kewiv](https://ko-fi.com/kewiv)** ครับ
 
 ## ความสามารถ
 
