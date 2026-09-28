@@ -21,8 +21,9 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.8"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.4.9"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
+KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 BIN_DIR = os.path.join(APP_DIR, "bin")
@@ -1860,8 +1861,20 @@ class App(tk.Tk):
         bar.add_cascade(label="Language / ภาษา", menu=lang)
         tools = tk.Menu(bar, tearoff=0)
         tools.add_command(label=tr("ล้างประวัติไฟล์ที่โหลด (sources.json)"), command=self.clear_sources)
+        tools.add_separator()
+        tools.add_command(label=tr("หน้าโปรเจกต์บน GitHub"),
+                          command=lambda: self.open_link(f"https://github.com/{GITHUB_REPO}"))
+        tools.add_command(label=tr("สนับสนุนผู้พัฒนา (Ko-fi)"), command=lambda: self.open_link(KOFI_URL))
         bar.add_cascade(label=tr("เครื่องมือ"), menu=tools)
         self.config(menu=bar)
+
+    def open_link(self, url):
+        """เปิดลิงก์ในเบราว์เซอร์หลักของเครื่อง (ไม่ใช่ Chrome ตัวที่แอปใช้อ่านหน้าเว็บ)"""
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            self.write_log(f"เปิดลิงก์ไม่ได้: {e}")
 
     def clear_sources(self):
         """ลืมว่าไฟล์ไหนโหลดมาจากลิงก์ไหน (ไฟล์วิดีโอไม่ถูกลบ) หลังล้างแล้วไฟล์เดิมที่ชื่อตรงกันจะนับว่า "มีแล้ว" ตามชื่อ"""
