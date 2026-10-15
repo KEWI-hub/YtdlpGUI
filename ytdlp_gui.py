@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.5.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.5.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -1006,6 +1006,9 @@ def pick_name(item_id, folder, title, url, limit):
     return base
 
 
+# 416 = ขอไฟล์ท่อนที่เกินขนาดจริงของมัน แปลว่าไฟล์ที่โหลดค้างไว้เก่าเกินใช้ไม่ได้แล้ว
+# ถ้าไม่ลบทิ้ง yt-dlp จะข้ามไฟล์เก่าแล้วไปเจอท่อนเดิมที่พังซ้ำทุกรอบ ไม่มีวันจบ
+STALE_PART_RE = re.compile(r"HTTP Error 416|Requested Range Not Satisfiable", re.I)
 PARTIAL_RE = re.compile(r"\.(?:part|ytdl|temp)$|\.part-Frag\d+$", re.I)
 
 
@@ -2662,18 +2665,11 @@ class App(tk.Tk):
         except OSError as e:
             self.write_log(f"จดคลิปที่เอาออกไม่ได้ ({e}) ขอไม่เอาออกจากคิวดีกว่า")
             return 0
-        junk, freed = [], 0
+        junk, freed = 0, 0
         for it in dead:
-            stem = os.path.splitext(os.path.basename(it["file"]))[0] if it.get("file") else \
-                clean_name(it.get("title") or "", self.opts.get("name_max", NAME_MAX) if self.opts else NAME_MAX)
-            for f in leftover_files(self._dest(it), stem):
-                try:
-                    freed += os.path.getsize(f)
-                    os.remove(f)
-                    junk.append(os.path.basename(f))
-                except OSError as e:
-                    freed -= os.path.getsize(f) if os.path.exists(f) else 0
-                    self.write_log(f"ลบซากไฟล์ไม่ได้: {os.path.basename(f)} ({e})")
+            n, b = self._sweep_leftovers(it)
+            junk += n
+            freed += b
         for it in dead:
             self.tree.delete(it["iid"])
             self.items.remove(it)
@@ -2684,9 +2680,24 @@ class App(tk.Tk):
         for it in dead:
             self.write_log(f"   ✂ {it.get('title') or it['url']}")
         if junk:
-            self.write_log(f"   ลบซากไฟล์ที่โหลดค้างไว้ {len(junk)} ไฟล์ "
+            self.write_log(f"   ลบซากไฟล์ที่โหลดค้างไว้ {junk} ไฟล์ "
                            f"คืนพื้นที่ {freed / (1 << 20):.1f} MB")
         return len(dead)
+
+    def _sweep_leftovers(self, it):
+        """ลบไฟล์ที่โหลดค้างของคลิปนี้ คืนค่า (จำนวนไฟล์, ไบต์ที่คืนมา)"""
+        stem = os.path.splitext(os.path.basename(it["file"]))[0] if it.get("file") else \
+            clean_name(it.get("title") or "", self.opts.get("name_max", NAME_MAX) if self.opts else NAME_MAX)
+        n, freed = 0, 0
+        for f in leftover_files(self._dest(it), stem):
+            try:
+                size = os.path.getsize(f)
+                os.remove(f)
+                n += 1
+                freed += size
+            except OSError as e:
+                self.write_log(f"ลบซากไฟล์ไม่ได้: {os.path.basename(f)} ({e})")
+        return n, freed
 
     def _update_summary(self):
         if not self.running:
@@ -3216,6 +3227,12 @@ class App(tk.Tk):
                         elif rc != 0:
                             it["status"], it["progress"] = FAIL, f"โหลดไม่ได้: {reason}" if reason else f"โหลดไม่ได้ (exit {rc})"
                             log_error("download", it["progress"], detail, it["url"])
+                            if STALE_PART_RE.search(detail or ""):
+                                n, freed = self._sweep_leftovers(it)
+                                if n:
+                                    self.write_log(f"ไฟล์ที่โหลดค้างไว้ของ {it.get('title') or it['url']} "
+                                                   f"ใช้ต่อไม่ได้แล้ว (HTTP 416) ลบทิ้ง {n} ไฟล์ "
+                                                   f"({freed / (1 << 20):.1f} MB) รอบหน้าจะเริ่มใหม่ให้สะอาด")
                         elif not it["convert"]:
                             it["status"], it["progress"] = DONE, "100%"
                         elif file and os.path.isfile(file):
