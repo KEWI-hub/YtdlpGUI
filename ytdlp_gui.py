@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.5.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.6.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -201,6 +201,12 @@ ADBLOCK_DIR = os.path.join(APP_DIR, "_browser_ext", "ubol")  # uBlock Origin Lit
 UBOL_API = "https://api.github.com/repos/uBlockOrigin/uBOL-home/releases/latest"
 _adblock_tried = [False]
 BROWSER_DIR = os.path.join(APP_DIR, "_browser")
+CHROMIUM_DIR = os.path.join(APP_DIR, "_chromium")  # Chromium ของแอปเอง (ไม่ใช่ของที่ผู้ใช้ติดตั้ง)
+CHROMIUM_EXE = os.path.join(CHROMIUM_DIR, "chrome-win64", "chrome.exe")
+# Chrome for Testing ของ Google เอง: รุ่น stable ล่าสุด แบบ zip แตกแล้วใช้ได้เลย
+CFT_API = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+CHROMIUM_MB = 160
+_chromium_tried = [False]
 COOKIE_FILE = os.path.join(APP_DIR, "cookies.txt")  # cookie jar ของแอป (รูปแบบ Netscape)
 _cookie_lock = threading.Lock()
 CHROME_PATHS = [
@@ -406,7 +412,46 @@ def save_cookies(cookies):
 
 
 def find_chrome():
-    return next((p for p in CHROME_PATHS if os.path.isfile(p)), "")
+    """Chrome/Edge ที่ผู้ใช้ติดตั้งไว้ ถ้าไม่มีก็ใช้ Chromium ที่แอปโหลดมาเอง (ไม่โหลดใหม่ตรงนี้)"""
+    hit = next((p for p in CHROME_PATHS if os.path.isfile(p)), "")
+    return hit or (CHROMIUM_EXE if os.path.isfile(CHROMIUM_EXE) else "")
+
+
+def ensure_chromium(notify=None):
+    """โหลด Chromium (Chrome for Testing ของ Google) มาไว้ใน _chromium\\ ถ้าเครื่องไม่มีเบราว์เซอร์
+
+    เรียกเฉพาะตอนที่ต้องใช้เบราว์เซอร์จริงๆ แล้วหาในเครื่องไม่เจอ
+    ชุดเต็ม (zip) แถมมาให้แล้ว เลยมักไม่ต้องโหลดอะไร
+    คืน path ของ chrome.exe หรือค่าว่างถ้าโหลดไม่สำเร็จ
+    """
+    if os.path.isfile(CHROMIUM_EXE):
+        return CHROMIUM_EXE
+    if _chromium_tried[0]:
+        return ""
+    _chromium_tried[0] = True
+    try:
+        import io as _io
+        import zipfile
+        if notify:
+            notify(f"เครื่องนี้ไม่มี Chrome/Edge กำลังโหลด Chromium ของแอป (~{CHROMIUM_MB} MB) ครั้งเดียวจบ ...")
+        with urllib.request.urlopen(CFT_API, timeout=60) as r:
+            data = json.loads(r.read().decode())
+        dl = data["channels"]["Stable"]["downloads"]["chrome"]
+        url = next(x["url"] for x in dl if x["platform"] == "win64")
+        req = urllib.request.Request(url, headers={"User-Agent": "YtdlpGUI"})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            blob = r.read()
+        os.makedirs(CHROMIUM_DIR, exist_ok=True)
+        with zipfile.ZipFile(_io.BytesIO(blob)) as z:
+            z.extractall(CHROMIUM_DIR)
+        if os.path.isfile(CHROMIUM_EXE):
+            if notify:
+                notify("โหลด Chromium เสร็จแล้ว ใช้ได้เลย")
+            return CHROMIUM_EXE
+    except Exception as e:
+        if notify:
+            notify(f"โหลด Chromium ไม่สำเร็จ: {e}")
+    return ""
 
 
 def _chrome_ua(chrome):
@@ -531,9 +576,9 @@ def fetch_page(url, timeout=WEB_TIMEOUT, notify=None):
     page = fetch_page_simple(url, timeout)
     if page and not is_challenge(page):
         return page
-    if not find_chrome():
+    if not find_chrome() and not ensure_chromium(notify):
         if notify:
-            notify("โดน Cloudflare บล็อก และไม่เจอ Chrome ในเครื่อง")
+            notify("โดน Cloudflare บล็อก และไม่มีเบราว์เซอร์ให้ใช้ฝ่าด่าน")
         return ""
     with _chrome_lock:
         if notify:
