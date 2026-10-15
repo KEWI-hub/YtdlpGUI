@@ -216,6 +216,18 @@ EN = {
     "คิวหมดแล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เอง":
         "When the queue empties, retry clips that failed because of the server",
     "กี่รอบ:": "rounds:",
+    "ลองครบรอบแล้วยังไม่ได้ ให้เอาคลิปนั้นออกจากคิว":
+        "Drop a clip from the queue once every round has been tried",
+    "(จด url ไว้ใน dropped-urls.txt เอากลับมาวางใหม่ได้ทุกเมื่อ)":
+        "(its url is kept in dropped-urls.txt, paste it back any time)",
+    "จดคลิปที่เอาออกไม่ได้ (": "could not record the dropped clips (",
+    ") ขอไม่เอาออกจากคิวดีกว่า": "), leaving them in the queue",
+    "ลองครบ ": "tried all ",
+    " รอบแล้วยังไม่ได้ เอา ": " rounds without luck, dropped ",
+    " คลิปออกจากคิว ": " clips from the queue ",
+    "(url จดไว้ใน ": "(their urls are in ",
+    " แล้ว)": " now)",
+    "เอาคลิปที่ server ล่มออก ": "dropped clips whose server was down: ",
     "Timeout: ต่อ server วิดีโอไม่ติด": "Timeout: cannot connect to the video server",
     "ต่อ server วิดีโอไม่ติด": "cannot connect to the video server",
     "ตอน ": "episode ",

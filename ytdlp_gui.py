@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.5.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.5.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -84,6 +84,7 @@ DEFAULTS = {
     "resolution": "สูงสุด",
     "auto_retry": 3,        # จบคิวแล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เองกี่รอบ (0 = ไม่ลองให้)
     "auto_retry_wait": 120,  # รอกี่วินาทีก่อนเริ่มแต่ละรอบ
+    "drop_dead": True,      # ลองครบรอบแล้วยังล้มเพราะ server ให้เอาออกจากคิว (url ถูกจดไว้ใน dropped-urls.txt)
 }
 
 # สถานะ
@@ -1005,6 +1006,24 @@ def pick_name(item_id, folder, title, url, limit):
     return base
 
 
+PARTIAL_RE = re.compile(r"\.(?:part|ytdl|temp)$|\.part-Frag\d+$", re.I)
+
+
+def leftover_files(folder, stem):
+    """ซากไฟล์ที่ yt-dlp ทิ้งไว้ของคลิปชื่อ stem (ไฟล์ที่โหลดไม่จบเท่านั้น ไฟล์คลิปจริงไม่แตะ)"""
+    if not stem:
+        return []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    out = []
+    for f in names:
+        if f.startswith(stem) and PARTIAL_RE.search(f):
+            out.append(os.path.join(folder, f))
+    return out
+
+
 def release_name(item_id):
     with _names_lock:
         _reserved.pop(item_id, None)
@@ -1399,6 +1418,7 @@ def from_display(value, keys):
 
 # ---------- Error log: เขียนลงไฟล์เฉพาะตอนมี error แล้ว push ขึ้น repo private ----------
 LOG_DIR = os.path.join(APP_DIR, "logs")
+DROPPED_FILE = os.path.join(APP_DIR, "dropped-urls.txt")  # คลิปที่ถูกเอาออกจากคิวเพราะ server ล่ม เอากลับมาวางใหม่ได้
 _log_lock = threading.Lock()
 
 
@@ -1616,6 +1636,7 @@ class App(tk.Tk):
         self.auto_retry_max = max(0, min(20, int(s.get("auto_retry", AUTO_RETRY_MAX) or 0)))
         self.auto_retry_wait = max(10, min(3600, int(s.get("auto_retry_wait", AUTO_RETRY_WAIT) or AUTO_RETRY_WAIT)))
         self.auto_retry_left = self.auto_retry_max  # เหลือลองใหม่อัตโนมัติอีกกี่รอบ
+        self.var_drop_dead = tk.BooleanVar(value=bool(s.get("drop_dead", True)))
         self.var_retry_on = tk.BooleanVar(value=self.auto_retry_max > 0)
         self.var_retry_n = tk.IntVar(value=self.auto_retry_max or AUTO_RETRY_MAX)
         self.retry_timer = None
@@ -1776,6 +1797,14 @@ class App(tk.Tk):
                                      state="readonly")
         self.spn_retry.pack(side="left", padx=4)
         ttk.Label(r1c, text=f"(เว้นรอบละ {AUTO_RETRY_WAIT // 60} นาที คลิปที่ตายจริงไม่เอามาลองซ้ำ)"
+                  ).pack(side="left", padx=(8, 0))
+
+        r1d = ttk.Frame(opt)
+        r1d.pack(fill="x", padx=6, pady=(0, 6))
+        self.chk_drop = ttk.Checkbutton(r1d, text="ลองครบรอบแล้วยังไม่ได้ ให้เอาคลิปนั้นออกจากคิว",
+                                        variable=self.var_drop_dead)
+        self.chk_drop.pack(side="left")
+        ttk.Label(r1d, text="(จด url ไว้ใน dropped-urls.txt เอากลับมาวางใหม่ได้ทุกเมื่อ)"
                   ).pack(side="left", padx=(8, 0))
         self._sync_retry()
 
@@ -2267,6 +2296,7 @@ class App(tk.Tk):
             "max_dl": to_int(self.var_max_dl, 3, 1, 8), "max_conv": to_int(self.var_max_conv, 1, 1, 4),
             "frags": to_int(self.var_frags, 16, 1, 32), "name_max": to_int(self.var_name_max, NAME_MAX, 30, 150),
             "auto_retry": self.retry_rounds(), "auto_retry_wait": self.auto_retry_wait,
+            "drop_dead": self.var_drop_dead.get(),
         })
 
     def browse_out(self):
@@ -2602,13 +2632,61 @@ class App(tk.Tk):
             self.cancel_auto_retry()
             self.retry_timer = self.after(self.auto_retry_wait * 1000, self.auto_retry)
         else:
+            dropped = self._drop_dead(retryable)
+            failed -= dropped
             self.var_status.set("หยุดแล้ว" if self.stopping else
-                                f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}")
+                                (f"คิวเสร็จแล้ว (เอาคลิปที่ server ล่มออก {dropped} คลิป"
+                                 f"{f', ล้มเหลว {failed}' if failed else ''})" if dropped else
+                                 f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}"))
         self.save_queue()
         self.push_error_logs()
         if self.pending_update and not self.stopping:
             self.var_status.set("คิวเสร็จแล้ว กำลังอัปเดตแอป ...")
             self.after(1500, self._apply_app_update)
+
+    def _drop_dead(self, dead):
+        """ลองครบรอบแล้วยังล้มเพราะ server ให้เอาออกจากคิว คืนค่าจำนวนที่เอาออก
+
+        เอาออกเฉพาะตอนที่ลองใหม่อัตโนมัติเปิดอยู่และใช้โควตาจนหมดแล้วเท่านั้น
+        คือมีหลักฐานว่าลองซ้ำหลายรอบห่างกันเป็นนาทีแล้วจริงๆ ไม่ใช่พลาดครั้งเดียวแล้วทิ้ง
+        url ทุกอันถูกจดลง dropped-urls.txt ก่อนเสมอ จะได้เอากลับมาวางใหม่ได้
+        """
+        if (self.stopping or not dead or not self.var_drop_dead.get()
+                or self.auto_retry_max <= 0 or self.auto_retry_left > 0):
+            return 0
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(DROPPED_FILE, "a", encoding="utf-8") as f:
+                for it in dead:
+                    f.write(f"{stamp}\t{it['url']}\t{it.get('title', '')}\t{it['progress']}\n")
+        except OSError as e:
+            self.write_log(f"จดคลิปที่เอาออกไม่ได้ ({e}) ขอไม่เอาออกจากคิวดีกว่า")
+            return 0
+        junk, freed = [], 0
+        for it in dead:
+            stem = os.path.splitext(os.path.basename(it["file"]))[0] if it.get("file") else \
+                clean_name(it.get("title") or "", self.opts.get("name_max", NAME_MAX) if self.opts else NAME_MAX)
+            for f in leftover_files(self._dest(it), stem):
+                try:
+                    freed += os.path.getsize(f)
+                    os.remove(f)
+                    junk.append(os.path.basename(f))
+                except OSError as e:
+                    freed -= os.path.getsize(f) if os.path.exists(f) else 0
+                    self.write_log(f"ลบซากไฟล์ไม่ได้: {os.path.basename(f)} ({e})")
+        for it in dead:
+            self.tree.delete(it["iid"])
+            self.items.remove(it)
+        self._renumber()
+        self._update_summary()
+        self.write_log(f"ลองครบ {self.auto_retry_max} รอบแล้วยังไม่ได้ เอา {len(dead)} คลิปออกจากคิว "
+                       f"(url จดไว้ใน {os.path.basename(DROPPED_FILE)} แล้ว)")
+        for it in dead:
+            self.write_log(f"   ✂ {it.get('title') or it['url']}")
+        if junk:
+            self.write_log(f"   ลบซากไฟล์ที่โหลดค้างไว้ {len(junk)} ไฟล์ "
+                           f"คืนพื้นที่ {freed / (1 << 20):.1f} MB")
+        return len(dead)
 
     def _update_summary(self):
         if not self.running:
@@ -3051,7 +3129,9 @@ class App(tk.Tk):
 
     def _sync_retry(self):
         """ปิดสวิตช์ลองใหม่อัตโนมัติ = ช่องจำนวนรอบใช้ไม่ได้"""
-        self.spn_retry.configure(state="readonly" if self.var_retry_on.get() else "disabled")
+        on = self.var_retry_on.get()
+        self.spn_retry.configure(state="readonly" if on else "disabled")
+        self.chk_drop.configure(state="normal" if on else "disabled")
 
     def retry_rounds(self):
         """จำนวนรอบที่จะลองใหม่ให้เอง ตามที่ตั้งไว้ในหน้าจอ (0 = ไม่ลองให้)"""
