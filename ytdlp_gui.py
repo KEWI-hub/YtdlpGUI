@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.5.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.5.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -1431,6 +1431,29 @@ def _sanitize(text):
     return text.replace(home, "~").replace(home.replace("\\", "/"), "~") if home else text
 
 
+HANG_SEC = 15      # หน้าต่างไม่ขยับนานกว่านี้ถือว่าแข็ง
+HANG_LINES = 55    # จด stack ไม่เกินนี้ (log_error เก็บท้ายสุด 60 บรรทัด)
+
+
+def dump_stacks():
+    """สแตกของทุก thread ตอนนี้ ใช้ดูว่าใครบล็อกหน้าต่างอยู่"""
+    import faulthandler
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), f"ytdlpgui-hang-{os.getpid()}.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            faulthandler.dump_traceback(file=f, all_threads=True)
+        with open(path, encoding="utf-8") as f:
+            return "\n".join(f.read().splitlines()[:HANG_LINES])
+    except Exception as e:
+        return f"อ่าน stack ไม่ได้: {e}"
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def log_error(kind, message, detail="", url=""):
     """เขียน error 1 รายการลง logs/errors-YYYY-MM-DD.log (ไม่เขียนอย่างอื่นลงไฟล์)"""
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -1677,6 +1700,10 @@ class App(tk.Tk):
         self.after(15000, self.push_error_logs)
         self.bench_ready = False
         threading.Thread(target=lambda: self.events.put(("encoders", benchmark_encoders())), daemon=True).start()
+        self._beat = time.time()
+        self._hang_logged = False
+        self.after(500, self._heartbeat)
+        threading.Thread(target=self._hang_watch, daemon=True).start()
         self.after(100, self._pump)
 
         missing = missing_tools()
@@ -2637,15 +2664,31 @@ class App(tk.Tk):
         else:
             dropped = self._drop_dead(retryable)
             failed -= dropped
-            self.var_status.set("หยุดแล้ว" if self.stopping else
-                                (f"คิวเสร็จแล้ว (เอาคลิปที่ server ล่มออก {dropped} คลิป"
-                                 f"{f', ล้มเหลว {failed}' if failed else ''})" if dropped else
-                                 f"คิวเสร็จแล้ว{f' (ล้มเหลว {failed})' if failed else ''}"))
+            self.var_status.set("หยุดแล้ว" if self.stopping else self._finish_text(failed, dropped))
         self.save_queue()
         self.push_error_logs()
         if self.pending_update and not self.stopping:
             self.var_status.set("คิวเสร็จแล้ว กำลังอัปเดตแอป ...")
             self.after(1500, self._apply_app_update)
+
+    def _finish_text(self, failed, dropped):
+        """ข้อความตอนคิวจบ บอกด้วยว่าที่ล้มเหลวจะถูกลองใหม่ไหม จะได้ไม่นึกว่าแอปค้าง"""
+        if not failed and not dropped:
+            return "คิวเสร็จแล้ว"
+        parts = []
+        if dropped:
+            parts.append(f"เอาคลิปที่ server ล่มออก {dropped} คลิป")
+        perm = sum(1 for i in self.items if i["status"] == FAIL
+                   and PERMANENT_FAIL_RE.search(i["progress"] or ""))
+        rest = failed - perm
+        if perm:
+            parts.append(f"พังถาวร {perm} คลิป (ไฟล์หายจากเว็บ) ไม่ลองใหม่ให้")
+        if rest > 0:
+            parts.append(f"ล้มเหลว {rest} คลิป ลองครบรอบแล้ว"
+                         if self.auto_retry_max else f"ล้มเหลว {rest} คลิป (ปิดลองใหม่อัตโนมัติไว้)")
+        msg = "คิวเสร็จแล้ว" + (" · " + " · ".join(parts) if parts else "")
+        self.write_log(msg)
+        return msg
 
     def _drop_dead(self, dead):
         """ลองครบรอบแล้วยังล้มเพราะ server ให้เอาออกจากคิว คืนค่าจำนวนที่เอาออก
@@ -3186,6 +3229,27 @@ class App(tk.Tk):
         self._schedule()
 
     # ---------- events from threads ----------
+    def _heartbeat(self):
+        """เต้นทุกครึ่งวินาทีบน main thread ให้ยามเฝ้ารู้ว่าหน้าต่างยังไหว"""
+        self._beat = time.time()
+        self.after(500, self._heartbeat)
+
+    def _hang_watch(self):
+        """หน้าต่างแข็งเกิน HANG_SEC ให้จดสแตกของทุก thread ลง log ไว้ดูว่าใครบล็อก
+
+        Windows จะฆ่าแอปทิ้งเองถ้าแข็งนานพอ (Application Hang) โดยไม่มีอะไรบอกสาเหตุ
+        จดไว้ก่อนตรงนี้ รอบหน้าที่เกิดจะได้รู้ว่าค้างตรงไหน
+        """
+        while True:
+            time.sleep(3)
+            gap = time.time() - getattr(self, "_beat", time.time())
+            if gap > HANG_SEC and not self._hang_logged:
+                self._hang_logged = True
+                log_error("hang", f"หน้าต่างไม่ตอบสนองมา {gap:.0f} วินาที", dump_stacks())
+            elif gap < 3 and self._hang_logged:
+                self._hang_logged = False
+                log_error("hang", "หน้าต่างกลับมาตอบสนองแล้ว")
+
     def _pump(self):
         changed = False
         try:
