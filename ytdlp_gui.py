@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.4.9"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.5.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -2503,12 +2503,14 @@ class App(tk.Tk):
         args.append(url)
         return args
 
-    def start(self):
+    def start(self, reset_retry=True):
+        """เริ่มโหลดคิว  reset_retry=False คือรอบที่ auto_retry เรียกเอง (ห้ามรีเซ็ตโควตา ไม่งั้นวนไม่รู้จบ)"""
         if self.running or self.busy_updating:
             return
         self.cancel_auto_retry()
-        self.auto_retry_max = self.retry_rounds()
-        self.auto_retry_left = self.auto_retry_max  # กดเริ่มเองคือเริ่มนับใหม่
+        if reset_retry:
+            self.auto_retry_max = self.retry_rounds()
+            self.auto_retry_left = self.auto_retry_max  # ผู้ใช้กดเริ่มเองคือเริ่มนับใหม่
         missing = missing_tools()
         if missing:
             self.offer_first_setup(missing)
@@ -3080,7 +3082,7 @@ class App(tk.Tk):
         for it in again:
             self._reset_item(it)
         self.save_queue()
-        self.start()
+        self.start(reset_retry=False)
 
     def stop(self):
         if not self.running:
