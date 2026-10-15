@@ -216,6 +216,7 @@ EN = {
     "คิวหมดแล้วลองคลิปที่ล้มเพราะ server ใหม่ให้เอง":
         "When the queue empties, retry clips that failed because of the server",
     "กี่รอบ:": "rounds:",
+    "ของแอปเอง": "the app's own",
     "ลองครบรอบแล้วยังไม่ได้ ให้เอาคลิปนั้นออกจากคิว":
         "Drop a clip from the queue once every round has been tried",
     "(จด url ไว้ใน dropped-urls.txt เอากลับมาวางใหม่ได้ทุกเมื่อ)":

@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.5.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.5.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -44,7 +44,8 @@ AUTO_FMT = "อัตโนมัติ (เลือกที่ดีที่
 BEST_FMT = "ดีที่สุด (แยกภาพ+เสียง แล้วรวม)"
 AUTO_RES = 1080  # "อัตโนมัติ" + ความชัด "สูงสุด" = จำกัดที่ 1080p (ไม่มีก็เอา 720p) ยกเว้น YouTube ที่เอาชัดสุดเสมอ
 RESOLUTIONS = {"สูงสุด": 0, "1080p": 1080, "720p": 720}  # 0 = ไม่จำกัด
-BROWSERS = ["ไม่ใช้", "firefox", "chrome", "edge", "brave", "opera"]
+APP_JAR = "ของแอปเอง"  # cookie ของแอปเอง ไม่ยุ่งกับโปรไฟล์เบราว์เซอร์จริงของผู้ใช้
+BROWSERS = ["ไม่ใช้", APP_JAR, "firefox", "chrome", "edge", "brave", "opera"]
 PRESETS = ["ultrafast", "veryfast", "fast", "medium", "slow", "slower"]
 CONTAINERS = ["mp4", "mkv"]
 # ตัวแปลง H.265: ชื่อที่โชว์ -> ffmpeg encoder (เรียงตามความเร็ว เลือกตัวแรกที่ใช้ได้เป็นค่าเริ่มต้น)
@@ -72,7 +73,8 @@ DEFAULTS = {
     "preset": "slow",
     "container": "mp4",
     "aria2c": True,
-    "cookies": "firefox",
+    "cookies": APP_JAR,
+    "cookie_migrated": False,
     "update_on_start": True,
     "max_dl": 3,
     "max_conv": 1,
@@ -199,6 +201,8 @@ ADBLOCK_DIR = os.path.join(APP_DIR, "_browser_ext", "ubol")  # uBlock Origin Lit
 UBOL_API = "https://api.github.com/repos/uBlockOrigin/uBOL-home/releases/latest"
 _adblock_tried = [False]
 BROWSER_DIR = os.path.join(APP_DIR, "_browser")
+COOKIE_FILE = os.path.join(APP_DIR, "cookies.txt")  # cookie jar ของแอป (รูปแบบ Netscape)
+_cookie_lock = threading.Lock()
 CHROME_PATHS = [
     os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
     os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
@@ -342,6 +346,65 @@ def ensure_adblock():
         return ""
 
 
+COOKIE_HEADER = "# Netscape HTTP Cookie File"
+
+
+def ensure_cookie_jar():
+    """สร้างไฟล์ cookie ของแอปถ้ายังไม่มี คืน path"""
+    try:
+        if not os.path.isfile(COOKIE_FILE):
+            with open(COOKIE_FILE, "w", encoding="utf-8", newline="\n") as f:
+                f.write(COOKIE_HEADER + "\n")
+    except OSError:
+        return ""
+    return COOKIE_FILE
+
+
+def _jar_key(line):
+    c = line.split("\t")
+    return (c[0], c[2], c[5]) if len(c) >= 7 else None
+
+
+def save_cookies(cookies):
+    """เก็บ cookie ที่ Chrome ของแอปได้มา ลง jar ของแอป (ทับของเดิมที่ชื่อ+โดเมน+path ซ้ำ)
+
+    cookies = รายการ dict จาก CDP Network.getAllCookies
+    ไม่ไปแตะโปรไฟล์เบราว์เซอร์จริงของผู้ใช้เลย
+    """
+    rows = {}
+    for c in cookies:
+        try:
+            dom = str(c.get("domain") or "")
+            name = str(c.get("name") or "")
+            if not dom or not name:
+                continue
+            exp = int(c.get("expires") or 0)
+            line = "\t".join([dom, "TRUE" if dom.startswith(".") else "FALSE",
+                               str(c.get("path") or "/"), "TRUE" if c.get("secure") else "FALSE",
+                               str(max(0, exp)), name, str(c.get("value") or "")])
+            k = _jar_key(line)
+            if k:
+                rows[k] = line
+        except (TypeError, ValueError):
+            continue
+    if not rows:
+        return 0
+    try:
+        with _cookie_lock:
+            old = []
+            if os.path.isfile(COOKIE_FILE):
+                with open(COOKIE_FILE, encoding="utf-8") as f:
+                    old = [l.rstrip("\n") for l in f if l.strip() and not l.startswith("#")]
+            keep = [l for l in old if _jar_key(l) not in rows]
+            with open(COOKIE_FILE, "w", encoding="utf-8", newline="\n") as f:
+                f.write(COOKIE_HEADER + "\n")
+                for l in keep + list(rows.values()):
+                    f.write(l + "\n")
+    except OSError:
+        return 0
+    return len(rows)
+
+
 def find_chrome():
     return next((p for p in CHROME_PATHS if os.path.isfile(p)), "")
 
@@ -405,6 +468,21 @@ def fetch_page_chrome(url, visible=False, timeout=60, js=None):
         ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
         msg_id = [0]
 
+        def call(method, params=None):
+            msg_id[0] += 1
+            ws.send(json.dumps({"id": msg_id[0], "method": method, "params": params or {}}))
+            while True:
+                res = json.loads(ws.recv())
+                if res.get("id") == msg_id[0]:
+                    return res.get("result", {})
+
+        def harvest():
+            """ดูด cookie ที่ได้จากการเปิดหน้านี้ เก็บไว้ใช้รอบหน้า (เช่น cf_clearance)"""
+            try:
+                save_cookies(call("Network.getCookies").get("cookies", []))
+            except Exception:
+                pass
+
         def evaluate(expr):
             msg_id[0] += 1
             ws.send(json.dumps({"id": msg_id[0], "method": "Runtime.evaluate",
@@ -425,6 +503,7 @@ def fetch_page_chrome(url, visible=False, timeout=60, js=None):
             except Exception:
                 page = ""
             if page and not is_challenge(page):
+                harvest()
                 if not js:
                     return page
                 try:
@@ -1636,6 +1715,10 @@ class App(tk.Tk):
         self.var_preset = tk.StringVar(value=s["preset"])
         self.var_container = tk.StringVar(value=s["container"] if s["container"] in CONTAINERS else "mp4")
         self.var_aria = tk.BooleanVar(value=s["aria2c"])
+        if not s.get("cookie_migrated") and s.get("cookies") == "firefox":
+            # ค่าเริ่มต้นเดิมคือไปอ่าน cookie จริงใน Firefox ของผู้ใช้ ย้ายมาใช้ jar ของแอปแทน
+            # (ยังเลือกกลับไปใช้ firefox เองได้ตลอดในหน้าตั้งค่า)
+            s["cookies"] = APP_JAR
         self.var_cookies = tk.StringVar(value=tr(s["cookies"]))
         self.var_update = tk.BooleanVar(value=s["update_on_start"])
         self.var_auto_clear = tk.BooleanVar(value=s["auto_clear"])
@@ -2321,7 +2404,8 @@ class App(tk.Tk):
             "resolution": from_display(self.var_res.get(), RESOLUTIONS), "lang": self.lang,
             "crf": to_int(self.var_crf, DEFAULTS["crf"], 0, 51), "preset": self.var_preset.get(),
             "container": self.var_container.get(), "aria2c": self.var_aria.get(),
-            "cookies": from_display(self.var_cookies.get(), BROWSERS), "update_on_start": self.var_update.get(),
+            "cookies": from_display(self.var_cookies.get(), BROWSERS), "cookie_migrated": True,
+            "update_on_start": self.var_update.get(),
             "auto_clear": self.var_auto_clear.get(), "max_pages": to_int(self.var_max_pages, 5, 1, 50),
             "max_dl": to_int(self.var_max_dl, 3, 1, 8), "max_conv": to_int(self.var_max_conv, 1, 1, 4),
             "frags": to_int(self.var_frags, 16, 1, 32), "name_max": to_int(self.var_name_max, NAME_MAX, 30, 150),
@@ -2371,7 +2455,10 @@ class App(tk.Tk):
 
     def _cookie_args(self):
         c = from_display(self.var_cookies.get(), BROWSERS)
-        return ["--cookies-from-browser", c] if c in BROWSERS[1:] else []
+        if c == APP_JAR:
+            jar = ensure_cookie_jar()
+            return ["--cookies", jar] if jar else []
+        return ["--cookies-from-browser", c] if c in BROWSERS[2:] else []
 
     def _title_worker(self):
         while True:
