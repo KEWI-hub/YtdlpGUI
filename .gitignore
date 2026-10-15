@@ -35,3 +35,6 @@ logs/
 # รายการคลิปที่เคยโหลด (ของแต่ละเครื่อง)
 downloaded.txt
 sources.json
+dropped-urls.txt
+cookies.txt
+_chromium/
