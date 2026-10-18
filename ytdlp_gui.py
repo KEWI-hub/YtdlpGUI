@@ -22,7 +22,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.6.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.6.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -191,9 +191,22 @@ def is_youtube(url):
     return bool(re.search(r"^https?://(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", url or "", re.I))
 
 
+FIRE_SITE_RE = re.compile(r"(^|\.)av-th\.(io|net|xyz)$", re.I)
+
+
+def is_fire_site(url):
+    """เว็บที่ใช้ player ตระกูล FirePlayer
+
+    ปล่อยให้ yt-dlp ลองเองไม่ได้ เพราะมันตามเข้า iframe แล้วไปโหลดไฟล์ย่อย
+    ด้วย header ชุดผิดจนได้ HTTP 500 ซึ่งไม่ใช่สัญญาณ "เว็บนี้ไม่รองรับ"
+    แอปเลยไม่มีวันถอยมาอ่านหน้าเว็บเอง ต้องบอกตั้งแต่ต้นว่าให้อ่านเอง
+    """
+    return bool(FIRE_SITE_RE.search(url_host(url)))
+
+
 def is_page_site(url):
     """เว็บที่ต้องอ่านหน้าเว็บเอง ไม่ส่งให้ yt-dlp ตรงๆ (yt-dlp ไม่รู้จัก หรืออ่านผิดเป็น playlist ขยะ)"""
-    return is_missav(url) or is_7mm(url)
+    return is_missav(url) or is_7mm(url) or is_fire_site(url)
 
 
 CHALLENGE_TITLES = ("just a moment", "attention required", "please wait", "checking your browser",
@@ -3237,8 +3250,14 @@ class App(tk.Tk):
                     if self.stopping or gone404[0]:
                         break
                     self.events.put(("log", f"[#{item_id}] โหลดจาก server {name}: {m}"))
-                    origin = re.match(r"https?://[^/]+", ref).group(0)
-                    extra = ["--impersonate", "chrome", "--referer", ref, "--add-headers", f"Origin:{origin}"]
+                    if m.startswith("file://"):
+                        # playlist ที่แอปเขียนเอง (FirePlayer) ไฟล์ย่อยจะโดน HTTP 500 ถ้าส่ง Origin ไปด้วย
+                        # ขั้นนี้ขอแค่ referer พอ ส่วน header ชุดเข้มใช้ไปแล้วตอนดึง playlist
+                        extra = ["--referer", ref]
+                    else:
+                        origin = re.match(r"https?://[^/]+", ref).group(0)
+                        extra = ["--impersonate", "chrome", "--referer", ref,
+                                 "--add-headers", f"Origin:{origin}"]
                     # aria2c ปลอมตัวเป็น Chrome ไม่ได้ เลยใช้ตัวโหลดของ yt-dlp แทน
                     rc, out = attempt_lower(m, extra, (fname + ".%(ext)s") if fname else None, aria=False)
                     if rc == 0:
@@ -3303,7 +3322,9 @@ class App(tk.Tk):
         else:
             rc, out = attempt_lower(url)
             if rc != 0 and not self.stopping:
-                if "Unsupported URL" in out:
+                if "Unsupported URL" in out or "HTTP Error 500" in out:
+                    # 500 มักแปลว่า yt-dlp ตามเข้า player เองแล้วขอไฟล์ด้วย header ผิดชุด
+                    # ถอยมาอ่านหน้าเว็บเองดีกว่า แอปรู้จักวิธีคุยกับ player มากกว่า
                     NO_YTDLP_HOSTS.add(url_host(url))
                     rc = via_page()
                 elif "impersonat" in out:
