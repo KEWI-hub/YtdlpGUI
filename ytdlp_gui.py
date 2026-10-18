@@ -1,6 +1,7 @@
 """YtdlpGUI - คิวโหลดวิดีโอด้วย yt-dlp แบบมีหน้าต่าง
 โหลดพร้อมกันได้หลายลิงก์ และแยกคิวแปลง H.265 ออกมาต่างหาก
 """
+import base64
 import html
 import itertools
 import json
@@ -21,7 +22,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.6.0"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.6.1"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -705,6 +706,92 @@ def javplayer_media(embed):
     return [media[k] for k in ("stream", "file", "url") if isinstance(media.get(k), str)]
 
 
+FIRE_ID_RE = re.compile(r"FirePlayer\(\s*[\"']([0-9a-f]{16,64})[\"']", re.I)
+FIRE_CK_RE = re.compile(r"[\"']ck[\"']\s*:\s*[\"']((?:\\+x[0-9a-fA-F]{2})+)[\"']")
+FIRE_RES_RE = re.compile(r"RESOLUTION=\d+x(\d+)")
+
+
+def site_root(url):
+    m = re.match(r"(https?://[^/]+)", url or "")
+    return m.group(1) + "/" if m else ""
+
+
+def fire_headers(root):
+    """header ที่ CDN ของ FirePlayer บังคับตอนขอ playlist (ขาดอันใดอันหนึ่งได้ 'security error')"""
+    return {"Referer": root, "Origin": root.rstrip("/"), "User-Agent": UA,
+            "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site", "Accept": "*/*"}
+
+
+def _fire_get(url, hdr, timeout=40):
+    req = urllib.request.Request(url, headers=hdr)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def fireplayer_hls(embed, referer, page=""):
+    """player ตระกูล FirePlayer: ลิงก์ไม่ได้อยู่ในหน้า ต้อง POST ถาม API เอา
+
+    ตัว playlist กับไฟล์ย่อยต้องการ header คนละชุด (playlist ต้องมี Origin/Sec-Fetch
+    ส่วนไฟล์ย่อยถ้ามีจะโดน HTTP 500) ส่งให้ yt-dlp ตรงๆ ชุดเดียวเลยไม่มีทางผ่าน
+    จึงดึง playlist มาเองแล้วเขียนเป็นไฟล์ในเครื่อง ชี้ไปที่ไฟล์ย่อยแบบ url เต็ม
+    คืนค่า (file:// ของ playlist ในเครื่อง, referer ที่ไฟล์ย่อยต้องใช้) หรือ ("", "")
+    """
+    raw = page or fetch_with_referer(embed, referer) or ""
+    txt = (unpack_js(raw) or "") + "\n" + raw
+    mid, mck = FIRE_ID_RE.search(txt), FIRE_CK_RE.search(txt)
+    if not (mid and mck):
+        return "", ""
+    root = site_root(referer) or site_root(embed)
+    try:
+        b64 = "".join(chr(int(x, 16)) for x in re.findall(r"x([0-9a-fA-F]{2})", mck.group(1)))
+        vhash = base64.b64decode(b64).decode("ascii", "replace")
+        api = urllib.parse.urljoin(embed, "/player/index.php") + f"?data={mid.group(1)}&do=getVideo"
+        req = urllib.request.Request(
+            api, data=urllib.parse.urlencode({"hash": vhash, "r": ""}).encode(),
+            headers={"Referer": embed, "Origin": site_root(embed).rstrip("/"),
+                     "User-Agent": UA, "X-Requested-With": "XMLHttpRequest",
+                     "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+        with urllib.request.urlopen(req, timeout=40) as r:
+            info = json.loads(r.read().decode("utf-8", "replace"))
+        src = (info.get("videoSource") or "").replace("\\/", "/")
+        if not src:
+            return "", ""
+        hdr = fire_headers(root)
+        master = _fire_get(src, hdr)
+        os.makedirs(TMP_DIR, exist_ok=True)
+        stem = os.path.join(TMP_DIR, "hls-" + re.sub(r"\W", "", src)[-24:])
+        lines, out = master.splitlines(), []
+        n = 0
+        for i, line in enumerate(lines):
+            if line.startswith("#EXT-X-STREAM-INF"):
+                nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                if not nxt:
+                    continue
+                var_url = urllib.parse.urljoin(src, nxt)
+                body = _fire_get(var_url, hdr)
+                # ไฟล์ย่อยต้องเป็น url เต็ม เพราะ playlist ย้ายมาอยู่ในเครื่องแล้ว
+                segs = [urllib.parse.urljoin(var_url, x.strip())
+                        if x.strip() and not x.startswith("#") else x for x in body.splitlines()]
+                n += 1
+                vfile = f"{stem}-{n}.m3u8"
+                with open(vfile, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("\n".join(segs) + "\n")
+                out.append(line)
+                out.append(os.path.basename(vfile))
+            elif not (i and lines[i - 1].startswith("#EXT-X-STREAM-INF")):
+                out.append(line)
+        if not n:
+            return "", ""
+        mfile = stem + "-master.m3u8"
+        with open(mfile, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(out) + "\n")
+        return "file:///" + mfile.replace("\\", "/"), root
+    except Exception as e:
+        _note_timeout(embed, str(e))
+        return "", ""
+
+
 def resolve_embed_links(embed, referer, depth=0):
     """เปิดหน้า player ของแต่ละ server หาลิงก์ m3u8/mp4 ถ้าไม่เจอให้ตาม iframe ที่ซ้อนอยู่ข้างในอีกชั้น
     คืนค่า ([ลิงก์วิดีโอ เรียงตัวที่ควรใช้ก่อน], หน้าที่ใช้เป็น referer, คลิปถูกลบไปแล้วหรือไม่)"""
@@ -716,6 +803,9 @@ def resolve_embed_links(embed, referer, depth=0):
     media = find_media_all(page, embed) or javplayer_media(embed)
     if media:
         return media, embed, False
+    fire, fire_ref = fireplayer_hls(embed, referer, page)
+    if fire:
+        return [fire], fire_ref, False
     if page and DEAD_RE.search(page):
         return [], embed, True
     if page and PARKED_PAGE_RE.search(page):
@@ -2658,6 +2748,9 @@ class App(tk.Tk):
                 "|%(progress.downloaded_bytes)s",
                 # connection ที่เงียบเกิน 20 วิ ให้ตัดแล้วลองชิ้นนั้นใหม่ (ไม่งั้นค้างตลอดไปที่ 99.x%)
                 "--socket-timeout", str(WEB_TIMEOUT)]
+        if url.startswith("file://"):
+            # playlist ที่แอปเขียนไว้เองใน _tmp (เช่น FirePlayer) ไฟล์ย่อยยังโหลดจากเน็ตตามปกติ
+            args.append("--enable-file-urls")
         # "อัตโนมัติ" ปรับตามเว็บให้เอง: YouTube เอาชัดสุดเสมอ (คลิปยาวไฟล์ใหญ่ก็ยอม)
         # เว็บอื่นจำกัดที่ 1080p (ถ้าไม่มีจะได้ 720p) เพราะสูงกว่านั้นมักเป็นไฟล์อัปสเกลที่ใหญ่เกินจำเป็น
         auto = opts["format"] == FORMATS[AUTO_FMT]
