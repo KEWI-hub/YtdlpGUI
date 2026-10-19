@@ -22,7 +22,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.6.2"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.6.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -204,9 +204,47 @@ def is_fire_site(url):
     return bool(FIRE_SITE_RE.search(url_host(url)))
 
 
+TAIAV_SITE_RE = re.compile(r"(^|\.)taiav\.com$", re.I)
+TAIAV_ID_RE = re.compile(r"/movie/([0-9a-f]{16,32})", re.I)
+TAIAV_OPT_RE = re.compile(r"<option[^>]+value=[\"'](\d{3,5})[\"']", re.I)
+
+
+def is_taiav(url):
+    return bool(TAIAV_SITE_RE.search(url_host(url)))
+
+
+def taiav_media(page_url, page=""):
+    """taiav: ในหน้าเว็บไม่มีลิงก์วิดีโอเลย ต้องถาม /api/getmovie เอา
+
+    ค่า type ที่ส่งไปคือความกว้างของภาพ (เช่น 1280) ซึ่งอยู่ในกล่องเลือกความชัดของหน้านั้น
+    เดาเองไม่ได้ ใส่ผิดเว็บจะตอบว่า "ไม่ได้ตั้งค่ากลุ่มผู้ใช้สำหรับความละเอียดนี้"
+    API คืนมาเป็น path ไม่ใช่ url เต็ม ต้องเอามาต่อกับโดเมนของเว็บเอง
+    คืนลิงก์ m3u8 เต็ม หรือค่าว่างถ้าไม่ได้
+    """
+    m = TAIAV_ID_RE.search(page_url)
+    if not m:
+        return ""
+    root = re.match(r"https?://[^/]+", page_url).group(0)
+    page = page or fetch_page(page_url) or ""
+    widths = sorted({int(x) for x in TAIAV_OPT_RE.findall(page)}, reverse=True) or [1280]
+    hdr = {"Referer": page_url, "User-Agent": UA, "X-Requested-With": "XMLHttpRequest"}
+    for w in widths:
+        try:
+            req = urllib.request.Request(f"{root}/api/getmovie?type={w}&id={m.group(1)}", headers=hdr)
+            with urllib.request.urlopen(req, timeout=WEB_TIMEOUT * 2) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            _note_timeout(page_url, str(e))
+            continue
+        link = data.get("m3u8")
+        if link:
+            return urllib.parse.urljoin(root, link)
+    return ""
+
+
 def is_page_site(url):
     """เว็บที่ต้องอ่านหน้าเว็บเอง ไม่ส่งให้ yt-dlp ตรงๆ (yt-dlp ไม่รู้จัก หรืออ่านผิดเป็น playlist ขยะ)"""
-    return is_missav(url) or is_7mm(url) or is_fire_site(url)
+    return is_missav(url) or is_7mm(url) or is_fire_site(url) or is_taiav(url)
 
 
 CHALLENGE_TITLES = ("just a moment", "attention required", "please wait", "checking your browser",
@@ -3148,6 +3186,11 @@ class App(tk.Tk):
             def gather(page):
                 """หาลิงก์วิดีโอจากหน้านี้ คืน (ตัวหลักของแต่ละ server, ลิงก์สำรองของ player เดียวกัน)"""
                 cands, spare = [], []
+                if is_taiav(cur):
+                    # เว็บนี้ไม่มี iframe/player ให้ไล่ ลิงก์อยู่หลัง API อย่างเดียว
+                    link = taiav_media(cur, page)
+                    if link:
+                        return [("taiav", link, cur)], []
                 # ลิงก์ที่ลอยอยู่ในหน้าเว็บมักเป็นคลิปพรีวิวของ "เรื่องอื่น" ในแถบแนะนำ
                 # เลยเก็บไว้เป็นทางเลือกสุดท้าย ใช้ต่อเมื่อไม่มี server ไหนใช้ได้เลย
                 page_media = "" if is_7mm(cur) else find_media(page)
