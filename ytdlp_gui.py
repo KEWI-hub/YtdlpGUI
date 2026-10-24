@@ -22,7 +22,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from i18n import LANGS, set_lang, tr
 
 APP_NAME = "YtdlpGUI"
-APP_VERSION = "1.6.3"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
+APP_VERSION = "1.6.4"  # ต้องตรงกับ tag บน GitHub (vX.Y.Z) ตอนออก Release
 GITHUB_REPO = "KEWI-hub/YtdlpGUI"
 KOFI_URL = "https://ko-fi.com/kewiv"  # ลิงก์สนับสนุนผู้พัฒนา (อยู่ในเมนู เครื่องมือ)
 LOGS_REPO = "KEWI-hub/YtdlpGUI-logs"  # repo private เก็บ error log (push ได้เฉพาะเครื่องของเจ้าของ)
@@ -843,6 +843,49 @@ def fireplayer_hls(embed, referer, page=""):
         return "", ""
 
 
+SO_CODE_RE = re.compile(r"^https?://[^/]+/e/([a-z0-9]{8,24})/?$", re.I)
+SO_MARK_RE = re.compile(r"streamorigin|embedorigin|/app/v1/play", re.I)
+SO_API_RE = re.compile(r"https?://[a-z0-9.-]*embedorigin[a-z0-9.-]*", re.I)
+SO_CHUNK_RE = re.compile(r"src=[\"'](/_next/static/chunks/[^\"']+)[\"']", re.I)
+SO_API_LAST = "https://embedorigin.cc"  # เผื่อหาในหน้าไม่เจอ (โดเมนเคยสลับมาแล้ว)
+
+
+def streamorigin_hls(embed, referer, page=""):
+    """player ตระกูล streamorigin (video.playerrecord.cfd ฯลฯ) — ลิงก์ไม่ได้อยู่ในหน้าเลย
+
+    หน้า player เป็นเว็บแอป Next.js ที่ HTML ว่างเปล่า ตัวเล่นไปถาม API ตอนรันจริง
+    จึงต้องถาม API เดียวกันเอง: GET <api>/app/v1/play/<รหัสคลิป>?embed=1 แล้วอ่านช่อง hls
+    โดเมน API ไม่ hardcode เพราะสลับบ่อย — ไปอ่านจากไฟล์ JS ของหน้านั้นเอง
+    ลิงก์ที่ได้มีเวลาหมดอายุ (ช่อง expires_at) ห้ามเก็บไว้ใช้ซ้ำ ต้องขอใหม่ทุกครั้ง
+    คืนค่า (ลิงก์ m3u8, หน้าที่ใช้เป็น referer) หรือ ("", "")
+    """
+    m = SO_CODE_RE.match(embed or "")
+    if not (m and page and SO_MARK_RE.search(page)):
+        return "", ""
+    root = site_root(embed)
+    hit = SO_API_RE.search(page)
+    api = hit.group(0) if hit else ""
+    if not api:
+        # API base ซ่อนอยู่ในไฟล์ JS ไม่ได้อยู่ใน HTML ต้องตามไปอ่าน
+        for c in SO_CHUNK_RE.findall(page)[:12]:
+            hit = SO_API_RE.search(fetch_page_simple(urllib.parse.urljoin(root, c), 30) or "")
+            if hit:
+                api = hit.group(0)
+                break
+    try:
+        req = urllib.request.Request(
+            f"{api or SO_API_LAST}/app/v1/play/{m.group(1)}?embed=1",
+            headers={"Referer": root, "Origin": root.rstrip("/"), "User-Agent": UA,
+                     "Accept": "application/json, text/plain, */*"})
+        with urllib.request.urlopen(req, timeout=WEB_TIMEOUT) as r:
+            info = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        _note_timeout(embed, str(e))
+        return "", ""
+    link = info.get("hls") or info.get("mp4") or ""
+    return (link, root) if link.startswith("http") else ("", "")
+
+
 def resolve_embed_links(embed, referer, depth=0):
     """เปิดหน้า player ของแต่ละ server หาลิงก์ m3u8/mp4 ถ้าไม่เจอให้ตาม iframe ที่ซ้อนอยู่ข้างในอีกชั้น
     คืนค่า ([ลิงก์วิดีโอ เรียงตัวที่ควรใช้ก่อน], หน้าที่ใช้เป็น referer, คลิปถูกลบไปแล้วหรือไม่)"""
@@ -857,6 +900,9 @@ def resolve_embed_links(embed, referer, depth=0):
     fire, fire_ref = fireplayer_hls(embed, referer, page)
     if fire:
         return [fire], fire_ref, False
+    so, so_ref = streamorigin_hls(embed, referer, page)
+    if so:
+        return [so], so_ref, False
     if page and DEAD_RE.search(page):
         return [], embed, True
     if page and PARKED_PAGE_RE.search(page):
